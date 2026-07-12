@@ -1,0 +1,3 @@
+# --- Discord bot ---
+discord.py>=2.3,<3
+aiohttp>=3.8,<4          # used directly for `.decompile <url>` fetching (also a discord.py dep)

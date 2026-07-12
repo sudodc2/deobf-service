@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: deobf-service
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: DEOBF_SHARED_SECRET
+        sync: false

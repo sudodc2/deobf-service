@@ -1,0 +1,6 @@
+node_modules/
+tools/moonsec/bin/
+tools/moonsec/obj/
+tools/unluac.jar
+*.log
+.DS_Store
