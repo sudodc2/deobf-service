@@ -362,8 +362,62 @@ function deobfuscate(src) {
   return { output, notes };
 }
 
+// Build a raw "dump" of everything the recovery pulled out of a script:
+// every decoded string literal and every numeric constant, de-duplicated and
+// listed. Useful when full source can't be reconstructed but the decoded
+// strings/constants (URLs, webhooks, config, keys) are still valuable.
+function buildDump(src) {
+  if (!src || typeof src !== 'string') return '';
+  const { masked, store } = maskLiterals(src);
+  const strings = [];
+  const seenStr = new Set();
+  for (const lit of store) {
+    const q = lit[0];
+    if (q !== '"' && q !== "'" && !lit.startsWith('[[') && !lit.startsWith('[=')) continue;
+    // skip long-bracket comments; keep string literals
+    let val = lit;
+    if (q === '"' || q === "'") val = lit.slice(1, -1);
+    else {
+      const m = /^\[(=*)\[([\s\S]*)\]\1\]$/.exec(lit);
+      if (!m) continue;
+      val = m[2];
+    }
+    if (val.length === 0) continue;
+    if (seenStr.has(val)) continue;
+    seenStr.add(val);
+    strings.push(val);
+  }
+
+  const numbers = [];
+  const seenNum = new Set();
+  const numRe = /-?\b\d+(?:\.\d+)?\b/g;
+  let nm;
+  while ((nm = numRe.exec(masked))) {
+    const n = nm[0];
+    if (seenNum.has(n)) continue;
+    seenNum.add(n);
+    numbers.push(n);
+    if (numbers.length > 5000) break;
+  }
+
+  const lines = [];
+  lines.push('-- Sudo Deobfuscator — raw decoded dump');
+  lines.push('-- https://discord.gg/ZyXAgmSVPA');
+  lines.push('-- Every decoded string + numeric constant the deobfuscator recovered.');
+  lines.push('-- (Use this when full source cannot be reconstructed.)');
+  lines.push('');
+  lines.push('-- ===== Decoded strings (' + strings.length + ') =====');
+  strings.forEach((s, i) => { lines.push('[' + (i + 1) + '] ' + toLuaString(s)); });
+  lines.push('');
+  lines.push('-- ===== Numeric constants (' + numbers.length + ') =====');
+  numbers.forEach((n, i) => { lines.push('[' + (i + 1) + '] ' + n); });
+  lines.push('');
+  return lines.join('\n');
+}
+
 module.exports = {
   deobfuscate,
+  buildDump,
   isSudoOwned,
   evalArith,
   decodeCharCalls,

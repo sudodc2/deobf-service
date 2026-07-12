@@ -292,7 +292,10 @@ app.post('/deobf', async (req, res) => {
       } catch (_) { /* keep the tool's partial output */ }
     }
 
-    return res.json({ ok: true, detected, tool, fetchedFrom, ...result });
+    const dump = (result && result.output && !result.protected && !result.refused)
+      ? generic.buildDump(result.output)
+      : null;
+    return res.json({ ok: true, detected, tool, fetchedFrom, ...result, dump });
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e.message || e) });
   }
