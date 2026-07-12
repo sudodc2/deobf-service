@@ -337,6 +337,8 @@ def trace_blocks(src, d):
 
 
 def run_luau(source, timeout):
+    if os.environ.get("MOONVEIL_NO_EXEC") == "1":
+        raise RuntimeError("script execution disabled (MOONVEIL_NO_EXEC=1)")
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_mv_dec.luau")
     with open(path, "w", encoding="latin-1") as h:
         h.write(source)
@@ -2704,6 +2706,8 @@ def beta_harvest(src, timeout=120):
         r"(\w+)\s*=\s*function\s*\([^)]*\)\s*return\s+function", body)))
     keylist = "{" + ",".join("'%s'" % k for k in factory_keys) + "}"
     dump = _BETA_DUMP.replace("{'B','w','z'}", keylist) if factory_keys else _BETA_DUMP
+    if os.environ.get("MOONVEIL_NO_EXEC") == "1":
+        raise RuntimeError("script execution disabled (MOONVEIL_NO_EXEC=1)")
     harness = dump + "local __T=" + tablepart + "\n__WRAP(__T)\nreturn __T:" + entry + "(...)\n"
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_mv_beta.luau")
     with open(path, "w", encoding="latin-1") as h:

@@ -15,6 +15,7 @@ const { detectObfuscator } = require('./detect.js');
 const ironveil = require('./tools/ironveil/index.js');
 const prometheus = require('./prometheus_deobf.js');
 const karma = require('./karma_deobf.js');
+const generic = require('./generic_deobf.js');
 
 const ROOT = __dirname;
 const HERCULES = path.join(ROOT, 'tools/hercules/deobfhercules.py');
@@ -23,6 +24,17 @@ const MOONVEIL_DECOMPILE = path.join(ROOT, 'tools/moonveil/moonveil_decompile.py
 const UNLUAC = process.env.UNLUAC_JAR || path.join(ROOT, 'tools/unluac.jar');
 
 const MAX_BYTES = 3 * 1024 * 1024;
+
+// SECURITY: submitted scripts are treated as inert data. The only tool that
+// would *run* the input is the Moonveil tracer (it deserializes by executing
+// under luau, whose stdlib has no io/os.execute/network). Set
+// DEOBF_ALLOW_LUA_EXEC=0 to disable script execution entirely; either way the
+// tracer subprocess only ever sees SAFE_CHILD_ENV (no secrets).
+const ALLOW_LUA_EXEC = process.env.DEOBF_ALLOW_LUA_EXEC !== '0';
+// Minimal env for child analysers: never leak our secrets (shared key, tokens)
+// into a subprocess that might touch attacker-controlled input.
+const SAFE_CHILD_ENV = { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin', HOME: process.env.HOME || '/tmp' };
+
 const app = express();
 app.use(express.json({ limit: '6mb' }));
 
@@ -78,7 +90,7 @@ function runHercules(src) {
   const d = tmpdir();
   const inp = path.join(d, 'in.lua'), out = path.join(d, 'out.lua');
   fs.writeFileSync(inp, src);
-  const r = spawnSync('python3', [HERCULES, inp, out], { encoding: 'utf8', timeout: 60000 });
+  const r = spawnSync('python3', [HERCULES, inp, out], { encoding: 'utf8', timeout: 60000, env: SAFE_CHILD_ENV });
   if (r.status !== 0 || !fs.existsSync(out)) throw new Error('hercules: ' + (r.stderr || 'no output'));
   return { output: fs.readFileSync(out, 'utf8'), notes: ['Hercules static devirtualization — full source recovery.'] };
 }
@@ -94,15 +106,15 @@ function runMoonSec(src) {
   const inp = path.join(d, 'in.lua'), bc = path.join(d, 'out.luac'), asm = path.join(d, 'out.asm');
   fs.writeFileSync(inp, src);
   const notes = [];
-  const dev = spawnSync(MOONSEC_BIN, ['-dev', '-i', inp, '-o', bc], { encoding: 'utf8', timeout: 90000 });
+  const dev = spawnSync(MOONSEC_BIN, ['-dev', '-i', inp, '-o', bc], { encoding: 'utf8', timeout: 90000, env: SAFE_CHILD_ENV });
   if (dev.status !== 0 || !fs.existsSync(bc)) throw new Error('moonsec devirt: ' + (dev.stderr || 'failed'));
   notes.push('MoonSec V3 devirtualized to Lua 5.1 bytecode.');
   // disassembly for reference
-  spawnSync(MOONSEC_BIN, ['-dis', '-i', inp, '-o', asm], { encoding: 'utf8', timeout: 90000 });
+  spawnSync(MOONSEC_BIN, ['-dis', '-i', inp, '-o', asm], { encoding: 'utf8', timeout: 90000, env: SAFE_CHILD_ENV });
   // bytecode -> source via unluac if available
   let output = '';
   if (fs.existsSync(UNLUAC)) {
-    const dec = spawnSync('java', ['-jar', UNLUAC, bc], { encoding: 'utf8', timeout: 90000, maxBuffer: 16 * 1024 * 1024 });
+    const dec = spawnSync('java', ['-jar', UNLUAC, bc], { encoding: 'utf8', timeout: 90000, maxBuffer: 16 * 1024 * 1024, env: SAFE_CHILD_ENV });
     if (dec.status === 0 && dec.stdout && dec.stdout.trim()) {
       output = dec.stdout;
       notes.push('Bytecode decompiled to source via unluac.');
@@ -122,10 +134,14 @@ function runMoonveilStatic(src) {
   const inp = path.join(d, 'in.lua');
   const out = path.join(d, 'moonveil_decompiled.lua');
   fs.writeFileSync(inp, src);
+  const mvEnv = { ...SAFE_CHILD_ENV, MOONVEIL_OUT_DIR: d };
+  if (!ALLOW_LUA_EXEC) mvEnv.MOONVEIL_NO_EXEC = '1';
+  if (process.env.MOONVEIL_LUAU) mvEnv.MOONVEIL_LUAU = process.env.MOONVEIL_LUAU;
+  if (process.env.LUAU_BIN) mvEnv.LUAU_BIN = process.env.LUAU_BIN;
   const r = spawnSync('python3', [MOONVEIL_DECOMPILE, inp, out], {
     encoding: 'utf8', timeout: 120000, maxBuffer: 32 * 1024 * 1024,
     cwd: path.dirname(MOONVEIL_DECOMPILE),
-    env: { ...process.env, MOONVEIL_OUT_DIR: d },
+    env: mvEnv,
   });
   let output = '';
   if (fs.existsSync(out)) output = fs.readFileSync(out, 'utf8');
@@ -168,9 +184,15 @@ app.post('/deobf', async (req, res) => {
       }
     }
 
+    // Never deobfuscate our own Sudo-protected output.
+    if (generic.isSudoOwned(source)) {
+      return res.json({ ok: true, detected: { name: 'Sudo', confidence: 99, signals: ['ownership marker'] }, tool: 'Sudo', fetchedFrom, output: null, protected: true, notes: ['This script is protected by the Sudo obfuscation system. Deobfuscation is intentionally disabled for our own protection engine.'] });
+    }
+
     const detected = detectObfuscator(source);
     const which = forced || ((detected.confidence >= 30 ? detected.name : '') || '').toLowerCase();
     let result;
+    let tool = detected.name || forced;
     try {
       if (which.includes('hercules')) result = runHercules(source);
       else if (which.includes('ironveil')) result = runIronveil(source);
@@ -178,12 +200,23 @@ app.post('/deobf', async (req, res) => {
       else if (which.includes('prometheus')) result = prometheus.deobfuscate(source);
       else if (which.includes('moonveil')) result = runMoonveilStatic(source);
       else if (which.includes('karma')) result = karma.deobfuscate(source);
-      else return res.json({ ok: true, detected, tool: null, output: null, notes: ['No supported obfuscator detected with enough confidence. Supported: Hercules, Ironveil, MoonSec, Prometheus, Moonveil, KarmaProtect. Pass "type" to force one.'], fetchedFrom });
+      else {
+        // No named format matched — attempt best-effort generic recovery on ANY
+        // input instead of giving up.
+        result = generic.deobfuscate(source);
+        tool = 'Generic';
+      }
     } catch (toolErr) {
-      return res.json({ ok: true, detected, tool: detected.name || forced, fetchedFrom, output: null, notes: [`Detected ${detected.name || forced} but the deobfuscator failed: ${String(toolErr.message || toolErr)}`], failed: true });
+      // A named tool failed: fall back to generic best-effort rather than erroring.
+      try {
+        const g = generic.deobfuscate(source);
+        return res.json({ ok: true, detected, tool: 'Generic', fetchedFrom, ...g, notes: [`Detected ${detected.name || forced} but its dedicated deobfuscator failed (${String(toolErr.message || toolErr)}); returning generic best-effort recovery instead.`, ...(g.notes || [])] });
+      } catch (_) {
+        return res.json({ ok: true, detected, tool: detected.name || forced, fetchedFrom, output: null, notes: [`Detected ${detected.name || forced} but the deobfuscator failed: ${String(toolErr.message || toolErr)}`], failed: true });
+      }
     }
 
-    return res.json({ ok: true, detected, tool: detected.name || forced, fetchedFrom, ...result });
+    return res.json({ ok: true, detected, tool, fetchedFrom, ...result });
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e.message || e) });
   }
