@@ -176,6 +176,14 @@ app.post('/deobf', async (req, res) => {
     if (!source) return res.status(400).json({ ok: false, error: 'no source or url' });
     if (Buffer.byteLength(source) > MAX_BYTES) return res.status(413).json({ ok: false, error: 'too large' });
 
+    // A bare URL pasted as the script (no loadstring/HttpGet wrapper) means
+    // "fetch this and deobfuscate what's there" — otherwise we'd just echo the
+    // URL back as its own output.
+    if (!fetchedFrom && /^https?:\/\/\S+$/i.test(source.trim())) {
+      try { const u = source.trim(); source = await safeFetch(u); fetchedFrom = u; }
+      catch (e) { return res.status(400).json({ ok: false, error: `fetch failed: ${String(e.message || e)}` }); }
+    }
+
     // loadstring/HttpGet stub -> fetch the real payload first
     if (!fetchedFrom) {
       const stubUrl = extractRemoteUrl(source);
