@@ -14,6 +14,7 @@ const net = require('node:net');
 const { detectObfuscator } = require('./detect.js');
 const ironveil = require('./tools/ironveil/index.js');
 const prometheus = require('./prometheus_deobf.js');
+const karma = require('./karma_deobf.js');
 
 const ROOT = __dirname;
 const HERCULES = path.join(ROOT, 'tools/hercules/deobfhercules.py');
@@ -176,7 +177,8 @@ app.post('/deobf', async (req, res) => {
       else if (which.includes('moonsec')) result = runMoonSec(source);
       else if (which.includes('prometheus')) result = prometheus.deobfuscate(source);
       else if (which.includes('moonveil')) result = runMoonveilStatic(source);
-      else return res.json({ ok: true, detected, tool: null, output: null, notes: ['No supported obfuscator detected with enough confidence. Supported: Hercules, Ironveil, MoonSec, Prometheus, Moonveil. Pass "type" to force one.'], fetchedFrom });
+      else if (which.includes('karma')) result = karma.deobfuscate(source);
+      else return res.json({ ok: true, detected, tool: null, output: null, notes: ['No supported obfuscator detected with enough confidence. Supported: Hercules, Ironveil, MoonSec, Prometheus, Moonveil, KarmaProtect. Pass "type" to force one.'], fetchedFrom });
     } catch (toolErr) {
       return res.json({ ok: true, detected, tool: detected.name || forced, fetchedFrom, output: null, notes: [`Detected ${detected.name || forced} but the deobfuscator failed: ${String(toolErr.message || toolErr)}`], failed: true });
     }

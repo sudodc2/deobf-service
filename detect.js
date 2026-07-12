@@ -29,6 +29,16 @@ const KNOWN = [
     marks: [/moonveil/i],
     struct: [/function\s+\w+\([\w,]{3,20}\)/, /\w+\[\d{4,5}\]/],
   },
+  {
+    name: 'KarmaProtect',
+    marks: [/Protected By Karma Lua Hosting/i, /--\[\[karma:\d+\]\]/, /karma-lua-hosting/i],
+    // return(function(...) ... end)(...) shell + the string.char/byte alias
+    // preamble it always emits — survives every option toggle.
+    struct: [
+      /return\s*\(\s*function\s*\(\s*\.\.\.\s*\)/,
+      /local\s+\w+\s*=\s*string\.char\s*;\s*local\s+\w+\s*=\s*string\.byte/,
+    ],
+  },
 ];
 
 function detectObfuscator(src) {
