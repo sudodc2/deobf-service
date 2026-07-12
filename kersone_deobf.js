@@ -127,6 +127,41 @@ function replay(p) {
   return { src, dataLen: data.length, keysLen: keys.length };
 }
 
+// Some Kers0ne builds (e.g. the "auto_grab" style) nest a final loader inside
+// the base66 layers: a numeric key table `K={..}` + an escaped byte string
+// `D="\ddd\ddd.."` XOR-combined with the repeating key, then loadstring'd. It's
+// still pure deterministic math, so decode it statically too (repeating-key XOR).
+function decodeKdXorStub(src) {
+  // Fire when the stub has an xor loop, or when it's a Kers0ne loader header
+  // (the D string may be truncated past the loop in copied samples). The
+  // printable-ratio sanity check below rejects wrong guesses either way.
+  if (!/bxor|xor|~/i.test(src) && !/Kers0ne Obfuscator/i.test(src)) return null;
+  // key table: the numeric array literal (pick the first plausible one).
+  const km = /\{\s*((?:\d{1,3}\s*,\s*){3,}\d{1,3})\s*\}/.exec(src);
+  if (!km) return null;
+  const key = km[1].split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => n >= 0 && n <= 255);
+  if (key.length < 2) return null;
+  // data string: the longest run of \ddd escapes (tolerate a missing closing
+  // quote in case the sample was copied/truncated).
+  let best = null;
+  const dRe = /((?:\\\d{1,3}){8,})/g;
+  let dm;
+  while ((dm = dRe.exec(src))) if (!best || dm[1].length > best.length) best = dm[1];
+  if (!best) return null;
+  const bytes = (best.match(/\\(\d{1,3})/g) || []).map((s) => parseInt(s.slice(1), 10) & 255);
+  if (bytes.length < 8) return null;
+  const out = Buffer.from(bytes.map((b, i) => (b ^ key[i % key.length]) & 255));
+  const decoded = out.toString('latin1');
+  // sanity: the result should be mostly printable text (real Lua source).
+  let printable = 0;
+  for (let i = 0; i < decoded.length; i++) {
+    const c = decoded.charCodeAt(i);
+    if (c === 9 || c === 10 || c === 13 || (c >= 32 && c < 127)) printable++;
+  }
+  if (printable / decoded.length < 0.85) return null;
+  return { src: decoded, keyLen: key.length, dataLen: bytes.length };
+}
+
 function verifyChecksum(src) {
   let c = 7;
   for (let i = 1; i <= src.length; i++) {
@@ -174,7 +209,26 @@ function deobfuscate(src) {
   notes.push(allVerified
     ? 'Length + anti-tamper checksum matched on every layer — recovery is byte-exact.'
     : 'One or more layer validators did not match — output is best-effort.');
-  return { output: cur.src, notes, recovered: cur.src, layers };
+
+  // Final loader stage: some builds wrap the real source in a repeating-key XOR
+  // stub (K={..} + D="\ddd..") instead of a further base66 layer. Peel that too.
+  let output = cur.src;
+  let xorStages = 0;
+  while (xorStages < 6) {
+    const kd = decodeKdXorStub(output);
+    if (!kd) break;
+    output = kd.src;
+    xorStages++;
+    if (looksLikeKersone(output) >= 6) {
+      // XOR stage revealed yet another base66 layer — recurse into it.
+      const more = decodeLayer(output);
+      if (more) { output = more.src; }
+    }
+  }
+  if (xorStages > 0) {
+    notes.push(`Recovered the inner repeating-key XOR loader stage${xorStages > 1 ? `s (${xorStages})` : ''} to reach the final source.`);
+  }
+  return { output, notes, recovered: output, layers };
 }
 
 function detect(src) {
@@ -182,4 +236,4 @@ function detect(src) {
   return { name: 'Kers0ne', confidence: Math.min(99, score * 15), signals: [`score ${score}`] };
 }
 
-module.exports = { deobfuscate, detect, looksLikeKersone, extractParams, replay, decodeBase66, verifyChecksum };
+module.exports = { deobfuscate, detect, looksLikeKersone, extractParams, replay, decodeBase66, decodeKdXorStub, verifyChecksum };

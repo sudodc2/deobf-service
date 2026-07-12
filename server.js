@@ -25,6 +25,11 @@ const MOONVEIL_DECOMPILE = path.join(ROOT, 'tools/moonveil/moonveil_decompile.py
 const UNLUAC = process.env.UNLUAC_JAR || path.join(ROOT, 'tools/unluac.jar');
 
 const MAX_BYTES = 3 * 1024 * 1024;
+// Per-subprocess wall-clock cap. Heavy native tools (MoonSec .NET, unluac,
+// Moonveil) used to run 60–120s each and stack, which — combined with Render
+// cold starts — made the Discord command hang/time out. Bound them tightly so
+// /deobf always returns quickly (falling back to Generic if a tool overruns).
+const TOOL_TIMEOUT = parseInt(process.env.DEOBF_TOOL_TIMEOUT_MS || '25000', 10);
 
 // SECURITY: submitted scripts are treated as inert data. The only tool that
 // would *run* the input is the Moonveil tracer (it deserializes by executing
@@ -85,13 +90,22 @@ function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'deob-'));
 }
 
+// Non-comment source length (a mostly-diagnostic dump reads as "thin").
+function thinLen(out) {
+  if (!out) return 0;
+  return out.split('\n').filter((l) => l.trim() && !l.trim().startsWith('--')).join('').trim().length;
+}
+function isThinOutput(out) {
+  return thinLen(out) < 40;
+}
+
 // ── per-obfuscator runners ──────────────────────────────────────────────────
 
 function runHercules(src) {
   const d = tmpdir();
   const inp = path.join(d, 'in.lua'), out = path.join(d, 'out.lua');
   fs.writeFileSync(inp, src);
-  const r = spawnSync('python3', [HERCULES, inp, out], { encoding: 'utf8', timeout: 60000, env: SAFE_CHILD_ENV });
+  const r = spawnSync('python3', [HERCULES, inp, out], { encoding: 'utf8', timeout: TOOL_TIMEOUT, env: SAFE_CHILD_ENV });
   if (r.status !== 0 || !fs.existsSync(out)) throw new Error('hercules: ' + (r.stderr || 'no output'));
   return { output: fs.readFileSync(out, 'utf8'), notes: ['Hercules static devirtualization — full source recovery.'] };
 }
@@ -107,15 +121,13 @@ function runMoonSec(src) {
   const inp = path.join(d, 'in.lua'), bc = path.join(d, 'out.luac'), asm = path.join(d, 'out.asm');
   fs.writeFileSync(inp, src);
   const notes = [];
-  const dev = spawnSync(MOONSEC_BIN, ['-dev', '-i', inp, '-o', bc], { encoding: 'utf8', timeout: 90000, env: SAFE_CHILD_ENV });
+  const dev = spawnSync(MOONSEC_BIN, ['-dev', '-i', inp, '-o', bc], { encoding: 'utf8', timeout: TOOL_TIMEOUT, env: SAFE_CHILD_ENV });
   if (dev.status !== 0 || !fs.existsSync(bc)) throw new Error('moonsec devirt: ' + (dev.stderr || 'failed'));
   notes.push('MoonSec V3 devirtualized to Lua 5.1 bytecode.');
-  // disassembly for reference
-  spawnSync(MOONSEC_BIN, ['-dis', '-i', inp, '-o', asm], { encoding: 'utf8', timeout: 90000, env: SAFE_CHILD_ENV });
   // bytecode -> source via unluac if available
   let output = '';
   if (fs.existsSync(UNLUAC)) {
-    const dec = spawnSync('java', ['-jar', UNLUAC, bc], { encoding: 'utf8', timeout: 90000, maxBuffer: 16 * 1024 * 1024, env: SAFE_CHILD_ENV });
+    const dec = spawnSync('java', ['-jar', UNLUAC, bc], { encoding: 'utf8', timeout: TOOL_TIMEOUT, maxBuffer: 16 * 1024 * 1024, env: SAFE_CHILD_ENV });
     if (dec.status === 0 && dec.stdout && dec.stdout.trim()) {
       output = dec.stdout;
       notes.push('Bytecode decompiled to source via unluac.');
@@ -173,7 +185,7 @@ function runMoonveilStatic(src) {
   if (process.env.MOONVEIL_LUAU) mvEnv.MOONVEIL_LUAU = process.env.MOONVEIL_LUAU;
   if (process.env.LUAU_BIN) mvEnv.LUAU_BIN = process.env.LUAU_BIN;
   const r = spawnSync('python3', [MOONVEIL_DECOMPILE, inp, out], {
-    encoding: 'utf8', timeout: 120000, maxBuffer: 32 * 1024 * 1024,
+    encoding: 'utf8', timeout: TOOL_TIMEOUT, maxBuffer: 32 * 1024 * 1024,
     cwd: path.dirname(MOONVEIL_DECOMPILE),
     env: mvEnv,
   });
@@ -263,6 +275,21 @@ app.post('/deobf', async (req, res) => {
       } catch (_) {
         return res.json({ ok: true, detected, tool: detected.name || forced, fetchedFrom, output: null, notes: [`Detected ${detected.name || forced} but the deobfuscator failed: ${String(toolErr.message || toolErr)}`], failed: true });
       }
+    }
+
+    // Guarantee useful output: if a named tool recovered almost nothing (only
+    // diagnostics/comments — e.g. a VM format it can't fully devirtualize, or a
+    // misdetection), fall back to generic best-effort so the user always gets
+    // as much real recovery as possible instead of an empty/diagnostic dump.
+    if (tool !== 'Generic' && result && !result.protected && isThinOutput(result.output)) {
+      try {
+        const g = generic.deobfuscate(source);
+        const gLen = g && g.output ? g.output.trim().length : 0;
+        if (gLen > thinLen(result.output)) {
+          result = { ...g, notes: [`Detected ${detected.name || tool}, but its dedicated pass recovered little source here; returning generic best-effort recovery instead.`, ...(g.notes || [])] };
+          tool = 'Generic';
+        }
+      } catch (_) { /* keep the tool's partial output */ }
     }
 
     return res.json({ ok: true, detected, tool, fetchedFrom, ...result });
