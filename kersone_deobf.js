@@ -32,6 +32,14 @@ function looksLikeKersone(src) {
   // structural: the base66 pair-decoder + rolling xor
   if (/\(\s*_?\w+\s*-\s*1\s*\)\s*\*\s*66\s*\+\s*\(\s*_?\w+\s*-\s*1\s*\)/.test(src)) score += 2;
   if (/%\s*#\w+\s*\)\s*\+\s*1/.test(src) && /\*\s*13\s*\+/.test(src) && /\*\s*17\s*\+/.test(src)) score += 2;
+  // structural: the direct repeating-key XOR loader (numeric key table +
+  // escaped byte string + bxor + loadstring) some Kers0ne/Karma builds ship
+  // without any base66 layer up front. Very loader-specific, so score it high.
+  const hasKeyTable = /\{\s*(?:\d{1,3}\s*,\s*){3,}\d{1,3}\s*\}/.test(src);
+  const hasEscData = /(?:\\\d{1,3}){16,}/.test(src);
+  const hasXor = /bxor|bit32|\bxor\b/i.test(src);
+  const hasLoad = /loadstring\s*or\s*load|\bload\b/.test(src);
+  if (hasKeyTable && hasEscData && hasXor && hasLoad) score += 4;
   return score;
 }
 
@@ -187,32 +195,43 @@ function decodeLayer(src) {
 // server falls back to Generic. The "maximum" preset nests multiple Base66
 // layers, so peel them until the real source appears (bounded depth).
 function deobfuscate(src) {
-  const first = decodeLayer(src);
-  if (!first) throw new Error('not a recognisable Kers0ne/Base66 structure');
-
-  let cur = first;
-  let layers = 1;
-  let allVerified = cur.verified;
-  const MAX_LAYERS = 12;
-  while (layers < MAX_LAYERS && looksLikeKersone(cur.src) >= 6) {
-    const next = decodeLayer(cur.src);
-    if (!next) break;
-    cur = next;
-    layers++;
-    allVerified = allVerified && cur.verified;
-  }
-
   const notes = [];
-  notes.push(layers > 1
-    ? `Kers0ne "Base66 Multi-XOR" (maximum preset) — peeled ${layers} nested decode layers to recover the original source.`
-    : 'Kers0ne "Base66 Multi-XOR" is a self-contained static decoder — recovered the exact original source by replaying its decode.');
-  notes.push(allVerified
-    ? 'Length + anti-tamper checksum matched on every layer — recovery is byte-exact.'
-    : 'One or more layer validators did not match — output is best-effort.');
+  let output;
+  let layers = 0;
+
+  const first = decodeLayer(src);
+  if (first) {
+    let cur = first;
+    layers = 1;
+    let allVerified = cur.verified;
+    const MAX_LAYERS = 12;
+    while (layers < MAX_LAYERS && looksLikeKersone(cur.src) >= 6) {
+      const next = decodeLayer(cur.src);
+      if (!next) break;
+      cur = next;
+      layers++;
+      allVerified = allVerified && cur.verified;
+    }
+    notes.push(layers > 1
+      ? `Kers0ne "Base66 Multi-XOR" (maximum preset) — peeled ${layers} nested decode layers to recover the original source.`
+      : 'Kers0ne "Base66 Multi-XOR" is a self-contained static decoder — recovered the exact original source by replaying its decode.');
+    notes.push(allVerified
+      ? 'Length + anti-tamper checksum matched on every layer — recovery is byte-exact.'
+      : 'One or more layer validators did not match — output is best-effort.');
+    output = cur.src;
+  } else {
+    // No Base66 layer up front — many Kers0ne/Karma builds ship the real source
+    // directly inside a repeating-key XOR loader (numeric key table `K={..}` +
+    // escaped byte string `D="\ddd.."`, XOR-combined then loadstring'd). It's
+    // pure deterministic math, so replay it statically to recover the source.
+    const kd0 = decodeKdXorStub(src);
+    if (!kd0) throw new Error('not a recognisable Kers0ne/Base66 structure');
+    output = kd0.src;
+    notes.push('Kers0ne repeating-key XOR loader — recovered the original source by replaying its XOR decode (byte-exact).');
+  }
 
   // Final loader stage: some builds wrap the real source in a repeating-key XOR
   // stub (K={..} + D="\ddd..") instead of a further base66 layer. Peel that too.
-  let output = cur.src;
   let xorStages = 0;
   while (xorStages < 6) {
     const kd = decodeKdXorStub(output);
