@@ -216,10 +216,76 @@ function tidyAliases(src) {
     .replace(/table\s*\[\s*"([A-Za-z_]\w*)"\s*\]/g, 'table.$1');
 }
 
+// Replace every string literal and comment with an opaque placeholder so the
+// line-splitting / indentation logic can never cut through the middle of a
+// literal (which would silently corrupt the recovered source). Returns the
+// masked text plus the table needed to restore the originals verbatim.
+function maskLiterals(src) {
+  const store = [];
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  const stash = (text) => { const id = store.length; store.push(text); return '\u0000' + id + '\u0000'; };
+  const longBracket = (start) => {
+    // start points at '['; match [=*[ ... ]=*] ; return end index or -1.
+    let j = start + 1; let eq = 0;
+    while (src[j] === '=') { eq++; j++; }
+    if (src[j] !== '[') return -1;
+    const close = ']' + '='.repeat(eq) + ']';
+    const end = src.indexOf(close, j + 1);
+    return end === -1 ? n : end + close.length;
+  };
+  while (i < n) {
+    const c = src[i];
+    // comments
+    if (c === '-' && src[i + 1] === '-') {
+      if (src[i + 2] === '[') {
+        const e = longBracket(i + 2);
+        if (e !== -1 && /^\[=*\[/.test(src.slice(i + 2, i + 4 + 8))) { out += stash(src.slice(i, e)); i = e; continue; }
+      }
+      let e = src.indexOf('\n', i);
+      if (e === -1) e = n;
+      out += stash(src.slice(i, e));
+      i = e;
+      continue;
+    }
+    // long-bracket string
+    if (c === '[' && (src[i + 1] === '[' || src[i + 1] === '=')) {
+      const e = longBracket(i);
+      if (e !== -1) { out += stash(src.slice(i, e)); i = e; continue; }
+    }
+    // quoted string
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < n) {
+        if (src[j] === '\\') { j += 2; continue; }
+        if (src[j] === c) { j++; break; }
+        if (src[j] === '\n') break;
+        j++;
+      }
+      out += stash(src.slice(i, j));
+      i = j;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return { masked: out, store };
+}
+
+function restoreLiterals(text, store) {
+  return text.replace(/\u0000(\d+)\u0000/g, (_, id) => store[Number(id)]);
+}
+
+// Token/keyword-aware re-indenter. Operates only on masked code so it never
+// touches the contents of strings or comments.
 function beautify(src) {
-  let s = src.replace(/\r/g, '');
-  s = s
-    .replace(/;/g, ';\n')
+  const { masked, store } = maskLiterals(src.replace(/\r/g, ''));
+  let s = masked
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\s*;\s*/g, ';\n')
+    .replace(/([^\s])\s+(local\s)/g, '$1\n$2')
+    .replace(/([^\s])\s+(return\b)/g, '$1\n$2')
     .replace(/\bthen\b/g, 'then\n')
     .replace(/\bdo\b/g, 'do\n')
     .replace(/\brepeat\b/g, 'repeat\n')
@@ -231,13 +297,16 @@ function beautify(src) {
   let indent = 0;
   const out = [];
   for (const line of lines) {
-    const dedent = /^(end|else|elseif|until|\})/.test(line);
+    const dedent = /^(end|else|elseif|until|\}|\))/.test(line);
     if (dedent && indent > 0) indent--;
-    out.push('  '.repeat(indent) + line);
-    const opens = /(\bthen|\bdo|\brepeat)$/.test(line) || /\bfunction\b[^)]*\)\s*$/.test(line) || /^else$/.test(line) || /^elseif\b.*then$/.test(line);
+    out.push('  '.repeat(Math.max(indent, 0)) + line);
+    const opens = /(\bthen|\bdo|\brepeat)$/.test(line)
+      || /\bfunction\b[^)]*\)\s*$/.test(line)
+      || /^else$/.test(line)
+      || /^elseif\b.*then$/.test(line);
     if (opens) indent++;
   }
-  return out.join('\n');
+  return restoreLiterals(out.join('\n'), store);
 }
 
 // Validate that a candidate rewrite still parses; if not, keep the previous text.
