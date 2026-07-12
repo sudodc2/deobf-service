@@ -15,6 +15,7 @@ const { detectObfuscator } = require('./detect.js');
 const ironveil = require('./tools/ironveil/index.js');
 const prometheus = require('./prometheus_deobf.js');
 const karma = require('./karma_deobf.js');
+const generic = require('./generic_deobf.js');
 
 const ROOT = __dirname;
 const HERCULES = path.join(ROOT, 'tools/hercules/deobfhercules.py');
@@ -168,9 +169,15 @@ app.post('/deobf', async (req, res) => {
       }
     }
 
+    // Never deobfuscate our own Sudo-protected output.
+    if (generic.isSudoOwned(source)) {
+      return res.json({ ok: true, detected: { name: 'Sudo', confidence: 99, signals: ['ownership marker'] }, tool: 'Sudo', fetchedFrom, output: null, protected: true, notes: ['This script is protected by the Sudo obfuscation system. Deobfuscation is intentionally disabled for our own protection engine.'] });
+    }
+
     const detected = detectObfuscator(source);
     const which = forced || ((detected.confidence >= 30 ? detected.name : '') || '').toLowerCase();
     let result;
+    let tool = detected.name || forced;
     try {
       if (which.includes('hercules')) result = runHercules(source);
       else if (which.includes('ironveil')) result = runIronveil(source);
@@ -178,12 +185,23 @@ app.post('/deobf', async (req, res) => {
       else if (which.includes('prometheus')) result = prometheus.deobfuscate(source);
       else if (which.includes('moonveil')) result = runMoonveilStatic(source);
       else if (which.includes('karma')) result = karma.deobfuscate(source);
-      else return res.json({ ok: true, detected, tool: null, output: null, notes: ['No supported obfuscator detected with enough confidence. Supported: Hercules, Ironveil, MoonSec, Prometheus, Moonveil, KarmaProtect. Pass "type" to force one.'], fetchedFrom });
+      else {
+        // No named format matched — attempt best-effort generic recovery on ANY
+        // input instead of giving up.
+        result = generic.deobfuscate(source);
+        tool = 'Generic';
+      }
     } catch (toolErr) {
-      return res.json({ ok: true, detected, tool: detected.name || forced, fetchedFrom, output: null, notes: [`Detected ${detected.name || forced} but the deobfuscator failed: ${String(toolErr.message || toolErr)}`], failed: true });
+      // A named tool failed: fall back to generic best-effort rather than erroring.
+      try {
+        const g = generic.deobfuscate(source);
+        return res.json({ ok: true, detected, tool: 'Generic', fetchedFrom, ...g, notes: [`Detected ${detected.name || forced} but its dedicated deobfuscator failed (${String(toolErr.message || toolErr)}); returning generic best-effort recovery instead.`, ...(g.notes || [])] });
+      } catch (_) {
+        return res.json({ ok: true, detected, tool: detected.name || forced, fetchedFrom, output: null, notes: [`Detected ${detected.name || forced} but the deobfuscator failed: ${String(toolErr.message || toolErr)}`], failed: true });
+      }
     }
 
-    return res.json({ ok: true, detected, tool: detected.name || forced, fetchedFrom, ...result });
+    return res.json({ ok: true, detected, tool, fetchedFrom, ...result });
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e.message || e) });
   }
