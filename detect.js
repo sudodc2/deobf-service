@@ -30,6 +30,13 @@ const KNOWN = [
     struct: [/function\s+\w+\([\w,]{3,20}\)/, /\w+\[\d{4,5}\]/],
   },
   {
+    name: 'Kers0ne',
+    marks: [/Protected By Kers0ne Obfuscator/i, /Base66 Multi-?XOR/i],
+    // the base66 pair decoder `(a-1)*66+(b-1)` is unique enough on its own to
+    // fingerprint the format even without the header comment.
+    struct: [/\(\s*_?\w+\s*-\s*1\s*\)\s*\*\s*66\s*\+\s*\(\s*_?\w+\s*-\s*1\s*\)/],
+  },
+  {
     name: 'KarmaProtect',
     marks: [/Protected By Karma Lua Hosting/i, /--\[\[karma:\d+\]\]/, /karma-lua-hosting/i],
     // return(function(...) ... end)(...) shell + the string.char/byte alias

@@ -15,6 +15,7 @@ const { detectObfuscator } = require('./detect.js');
 const ironveil = require('./tools/ironveil/index.js');
 const prometheus = require('./prometheus_deobf.js');
 const karma = require('./karma_deobf.js');
+const kersone = require('./kersone_deobf.js');
 const generic = require('./generic_deobf.js');
 
 const ROOT = __dirname;
@@ -129,6 +130,39 @@ function runMoonSec(src) {
   return { output, notes, artifacts };
 }
 
+function runKersone(src) {
+  // Static, deterministic replay of the Kers0ne "Base66 Multi-XOR" decoder.
+  // Never executes the submitted script — it only re-runs the pure decode math.
+  // The recovery is the byte-exact ORIGINAL source, so we return it as-is rather
+  // than pushing it through the generic transformer (which could rewrite the
+  // author's own legitimate code, e.g. fold a real `1+2`).
+  const r = kersone.deobfuscate(src);
+  const notes = [...(r.notes || [])];
+  let output = r.output;
+
+  // If the recovered layer is STILL obfuscated (another format, or an escape-
+  // heavy custom decrypt stub), push it through the generic best-effort pass to
+  // squeeze out more instead of stopping at an intermediate stub. Clean short
+  // source (e.g. print("HI")) is left byte-exact.
+  const escapeHits = (output.match(/\\\d{1,3}/g) || []).length;
+  const inner = detectObfuscator(output);
+  const stillObfuscated =
+    escapeHits > 20 ||
+    (inner.name && inner.confidence >= 30) ||
+    /Kers0ne Obfuscator/i.test(output.slice(0, 200));
+  if (stillObfuscated) {
+    try {
+      const g = generic.deobfuscate(output);
+      if (g && g.output && g.output.trim().length > 0) {
+        output = g.output;
+        notes.push('The recovered layer was itself another custom decrypt stub — ran generic best-effort recovery on it to decode as much of the final source as possible.');
+        for (const n of g.notes || []) notes.push(n);
+      }
+    } catch (_) { /* keep the byte-exact base66 recovery */ }
+  }
+  return { output, notes, recovered: r.recovered };
+}
+
 function runMoonveilStatic(src) {
   const d = tmpdir();
   const inp = path.join(d, 'in.lua');
@@ -197,12 +231,19 @@ app.post('/deobf', async (req, res) => {
       return res.json({ ok: true, detected: { name: 'Sudo', confidence: 99, signals: ['ownership marker'] }, tool: 'Sudo', fetchedFrom, output: null, protected: true, notes: ['This script is protected by the Sudo obfuscation system. Deobfuscation is intentionally disabled for our own protection engine.'] });
     }
 
-    const detected = detectObfuscator(source);
+    // Kers0ne "Base66 Multi-XOR" is a very specific self-contained decoder;
+    // give it its own high-confidence detection ahead of the generic detector.
+    const kersoneScore = kersone.looksLikeKersone(source);
+    let detected = detectObfuscator(source);
+    if (kersoneScore >= 6 && kersoneScore >= detected.confidence / 15) {
+      detected = { name: 'Kers0ne', confidence: Math.min(99, kersoneScore * 15), signals: [`base66 multi-xor (score ${kersoneScore})`] };
+    }
     const which = forced || ((detected.confidence >= 30 ? detected.name : '') || '').toLowerCase();
     let result;
     let tool = detected.name || forced;
     try {
-      if (which.includes('hercules')) result = runHercules(source);
+      if (which.includes('kers')) result = runKersone(source);
+      else if (which.includes('hercules')) result = runHercules(source);
       else if (which.includes('ironveil')) result = runIronveil(source);
       else if (which.includes('moonsec')) result = runMoonSec(source);
       else if (which.includes('prometheus')) result = prometheus.deobfuscate(source);
