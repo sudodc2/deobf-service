@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const dns = require('node:dns').promises;
 const net = require('node:net');
+const crypto = require('node:crypto');
 
 const { detectObfuscator } = require('./detect.js');
 const ironveil = require('./tools/ironveil/index.js');
@@ -34,10 +35,12 @@ const TOOL_TIMEOUT = parseInt(process.env.DEOBF_TOOL_TIMEOUT_MS || '25000', 10);
 
 // SECURITY: submitted scripts are treated as inert data. The only tool that
 // would *run* the input is the Moonveil tracer (it deserializes by executing
-// under luau, whose stdlib has no io/os.execute/network). Set
-// DEOBF_ALLOW_LUA_EXEC=0 to disable script execution entirely; either way the
-// tracer subprocess only ever sees SAFE_CHILD_ENV (no secrets).
-const ALLOW_LUA_EXEC = process.env.DEOBF_ALLOW_LUA_EXEC !== '0';
+// under luau, whose stdlib has no io/os.execute/network). This now FAILS CLOSED:
+// running attacker-controlled Lua is disabled unless an operator explicitly
+// opts in with DEOBF_ALLOW_LUA_EXEC=1. Every other path is pure static
+// analysis, so the default is fully safe; either way the tracer subprocess
+// only ever sees SAFE_CHILD_ENV (no secrets).
+const ALLOW_LUA_EXEC = process.env.DEOBF_ALLOW_LUA_EXEC === '1';
 // Minimal env for child analysers: never leak our secrets (shared key, tokens)
 // into a subprocess that might touch attacker-controlled input.
 const SAFE_CHILD_ENV = { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin', HOME: process.env.HOME || '/tmp' };
@@ -45,11 +48,26 @@ const SAFE_CHILD_ENV = { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin
 const app = express();
 app.use(express.json({ limit: '6mb' }));
 
-// Optional shared-secret gate so only the bot can call /deobf.
+// Shared-secret gate so only the bot can call /deobf. Fails CLOSED: if the
+// secret isn't configured, every non-health request is rejected rather than
+// left open to the world.
 const SHARED = process.env.DEOBF_SHARED_SECRET || '';
+
+function timingSafeEq(a, b) {
+  const ab = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
 app.use((req, res, next) => {
-  if (req.path === '/health' || !SHARED) return next();
-  if (req.get('x-deobf-key') === SHARED) return next();
+  if (req.path === '/health') return next();
+  if (!SHARED) {
+    console.error('DEOBF_SHARED_SECRET not configured — refusing request');
+    return res.status(503).json({ ok: false, error: 'service unavailable' });
+  }
+  const key = req.get('x-deobf-key');
+  if (key && timingSafeEq(key, SHARED)) return next();
   return res.status(401).json({ ok: false, error: 'unauthorized' });
 });
 
@@ -66,25 +84,72 @@ function extractRemoteUrl(src) {
 }
 
 function isPrivateIp(ip) {
+  // Normalise IPv4-mapped IPv6 (e.g. ::ffff:169.254.169.254) to its IPv4 form
+  // so a mapped address can't smuggle a private target past the IPv4 checks.
+  const m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  if (m) ip = m[1];
   if (net.isIPv4(ip)) {
     const p = ip.split('.').map(Number);
     return p[0] === 10 || p[0] === 127 || (p[0] === 172 && p[1] >= 16 && p[1] <= 31) ||
-      (p[0] === 192 && p[1] === 168) || (p[0] === 169 && p[1] === 254) || p[0] === 0;
+      (p[0] === 192 && p[1] === 168) || (p[0] === 169 && p[1] === 254) || p[0] === 0 ||
+      (p[0] === 100 && p[1] >= 64 && p[1] <= 127); // CGNAT
   }
-  return ip === '::1' || ip.startsWith('fc') || ip.startsWith('fd') || ip.startsWith('fe80');
+  return ip === '::1' || ip === '::' || ip.startsWith('fc') || ip.startsWith('fd') || ip.startsWith('fe80');
+}
+
+async function assertPublicHost(hostname) {
+  // Reject literals and resolved addresses that point at internal ranges. This
+  // is checked for EVERY hop (initial + each redirect) so a public URL can't
+  // 302 into the metadata service / loopback / RFC1918 space.
+  if (net.isIP(hostname) && isPrivateIp(hostname)) throw new Error('blocked private address');
+  const addrs = await dns.lookup(hostname, { all: true });
+  if (!addrs.length || addrs.some((a) => isPrivateIp(a.address))) throw new Error('blocked private address');
 }
 
 async function safeFetch(url) {
-  let u;
-  try { u = new URL(url); } catch { throw new Error('bad url'); }
-  if (!/^https?:$/.test(u.protocol)) throw new Error('unsupported protocol');
-  const addrs = await dns.lookup(u.hostname, { all: true });
-  if (addrs.some((a) => isPrivateIp(a.address))) throw new Error('blocked private address');
-  const res = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'deobf-service' } });
-  if (!res.ok) throw new Error(`fetch ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length > MAX_BYTES) throw new Error('remote too large');
-  return buf.toString('utf8');
+  // Manual redirect following with per-hop SSRF validation. `redirect:'follow'`
+  // would let a public URL bounce to a private one without re-checking, so we
+  // resolve+validate every hop ourselves and cap the chain length.
+  const MAX_REDIRECTS = 5;
+  let current = url;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    let u;
+    try { u = new URL(current); } catch { throw new Error('bad url'); }
+    if (!/^https?:$/.test(u.protocol)) throw new Error('unsupported protocol');
+    await assertPublicHost(u.hostname);
+
+    const res = await fetch(current, {
+      redirect: 'manual',
+      headers: { 'User-Agent': 'deobf-service' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      if (!loc) throw new Error(`redirect ${res.status} without location`);
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    if (!res.ok) throw new Error(`fetch ${res.status}`);
+    // Reject on declared length first, then stream with a hard cap so a lying
+    // Content-Length / chunked body can't buffer unbounded memory.
+    const cl = parseInt(res.headers.get('content-length') || '0', 10);
+    if (cl && cl > MAX_BYTES) throw new Error('remote too large');
+    if (!res.body) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > MAX_BYTES) throw new Error('remote too large');
+      return buf.toString('utf8');
+    }
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of res.body) {
+      const b = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += b.length;
+      if (total > MAX_BYTES) throw new Error('remote too large');
+      chunks.push(b);
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  }
+  throw new Error('too many redirects');
 }
 
 function tmpdir() {
@@ -217,7 +282,8 @@ app.post('/deobf', async (req, res) => {
         source = await safeFetch(String(req.body.url));
         fetchedFrom = String(req.body.url);
       } catch (e) {
-        return res.status(400).json({ ok: false, error: `fetch failed: ${String(e.message || e)}` });
+        console.error('safeFetch(url) failed:', e && e.message);
+        return res.status(400).json({ ok: false, error: 'could not fetch the provided URL' });
       }
     }
     if (!source) return res.status(400).json({ ok: false, error: 'no source or url' });
@@ -228,7 +294,7 @@ app.post('/deobf', async (req, res) => {
     // URL back as its own output.
     if (!fetchedFrom && /^https?:\/\/\S+$/i.test(source.trim())) {
       try { const u = source.trim(); source = await safeFetch(u); fetchedFrom = u; }
-      catch (e) { return res.status(400).json({ ok: false, error: `fetch failed: ${String(e.message || e)}` }); }
+      catch (e) { console.error('safeFetch(bare) failed:', e && e.message); return res.status(400).json({ ok: false, error: 'could not fetch the provided URL' }); }
     }
 
     // loadstring/HttpGet stub -> fetch the real payload first
@@ -239,9 +305,13 @@ app.post('/deobf', async (req, res) => {
       }
     }
 
-    // Never deobfuscate our own Sudo-protected output.
+    // Never deobfuscate our own Sudo-protected output. Detection uses visible
+    // markers AND strip-resistant structural fingerprints, so removing the top
+    // comment / invite / _SUDO_ globals no longer bypasses the refusal.
     if (generic.isSudoOwned(source)) {
-      return res.json({ ok: true, detected: { name: 'Sudo', confidence: 99, signals: ['ownership marker'] }, tool: 'Sudo', fetchedFrom, output: null, protected: true, notes: ['This script is protected by the Sudo obfuscation system. Deobfuscation is intentionally disabled for our own protection engine.'] });
+      const structural = generic.sudoStructuralScore(source);
+      const signals = structural >= 2 ? [`structural fingerprint (${structural}/5)`] : ['ownership marker'];
+      return res.json({ ok: true, detected: { name: 'Sudo', confidence: 99, signals }, tool: 'Sudo', fetchedFrom, output: null, protected: true, notes: ['This script is protected by the Sudo obfuscation system. Deobfuscation is intentionally disabled for our own protection engine.'] });
     }
 
     // Kers0ne "Base66 Multi-XOR" is a very specific self-contained decoder;
@@ -280,11 +350,13 @@ app.post('/deobf', async (req, res) => {
       }
     } catch (toolErr) {
       // A named tool failed: fall back to generic best-effort rather than erroring.
+      // Log the real error server-side; never leak it in the public response.
+      console.error('named tool failed:', detected.name || forced, toolErr && toolErr.message);
       try {
         const g = generic.deobfuscate(source);
-        return res.json({ ok: true, detected, tool: 'Generic', fetchedFrom, ...g, notes: [`Detected ${detected.name || forced} but its dedicated deobfuscator failed (${String(toolErr.message || toolErr)}); returning generic best-effort recovery instead.`, ...(g.notes || [])] });
+        return res.json({ ok: true, detected, tool: 'Generic', fetchedFrom, ...g, notes: [`Detected ${detected.name || forced} but its dedicated deobfuscator failed; returning generic best-effort recovery instead.`, ...(g.notes || [])] });
       } catch (_) {
-        return res.json({ ok: true, detected, tool: detected.name || forced, fetchedFrom, output: null, notes: [`Detected ${detected.name || forced} but the deobfuscator failed: ${String(toolErr.message || toolErr)}`], failed: true });
+        return res.json({ ok: true, detected, tool: detected.name || forced, fetchedFrom, output: null, notes: [`Detected ${detected.name || forced} but the deobfuscator failed.`], failed: true });
       }
     }
 
@@ -312,7 +384,8 @@ app.post('/deobf', async (req, res) => {
     }
     return res.json({ ok: true, detected, tool, fetchedFrom, ...result, dump });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e.message || e) });
+    console.error('deobf handler error:', e && e.stack ? e.stack : e);
+    return res.status(500).json({ ok: false, error: 'internal error' });
   }
 });
 

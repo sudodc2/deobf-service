@@ -19,10 +19,19 @@
 
 const luaparse = require('luaparse');
 
-// ── Sudo ownership marker ────────────────────────────────────────────────────
-// Our own obfuscator stamps this line at the very top of every build. When we
-// see it we refuse to deobfuscate — the service must not be a tool for stripping
-// our own protection system.
+// ── Sudo ownership detection ─────────────────────────────────────────────────
+// The service must never be a tool for stripping our own protection system, so
+// we refuse to deobfuscate anything the Sudo engine produced.
+//
+// Detection is two-layered so it can't be fooled by simply deleting the top
+// comment (the previous bypass):
+//   1) Visible markers — the branded header, invite, and _SUDO_ globals.
+//   2) Structural fingerprints — invariant code shapes the engine ALWAYS emits
+//      (anti-grab string-join decoder, base85 Horner decode, Z85 alphabet tail,
+//      writefile-guard dump var). These survive removal of the comment/invite/
+//      _SUDO_ names, and a build must match >= 2 of them to count as Sudo. They
+//      were picked against real third-party obfuscators (WeAreDevs, MoonSec,
+//      Prometheus, IY, etc.) so ordinary/foreign scripts score 0.
 const SUDO_INVITE = 'discord.gg/ZyXAgmSVPA';
 const SUDO_MARKERS = [
   /Protected by Sudo/i,
@@ -30,9 +39,28 @@ const SUDO_MARKERS = [
   /_SUDO_[A-Z0-9_]/,
 ];
 
+const SUDO_STRUCTURAL = [
+  // anti-grab vararg string accumulator
+  /function\(\.\.\.\)\s*local _a=\{\.\.\.\} local _r=""/,
+  // its join loop
+  /local _r="" for _z=1,#_a do _r=_r\.\./,
+  // base85 Horner-form decode expression
+  /\(\(\(_c1\*85\+_c2\)\*85\+_c3\)\*/,
+  // Z85-style alphabet tail used by the opaque blob decoder
+  /XYZ\.-:\+=\^!\/\*\?&<>\(\)\[\]\{\}@%/,
+  // writefile-guard dump sentinel
+  /if _wfDump/,
+];
+
+function sudoStructuralScore(src) {
+  return SUDO_STRUCTURAL.reduce((n, re) => n + (re.test(src) ? 1 : 0), 0);
+}
+
 function isSudoOwned(src) {
   const head = src.slice(0, 8192);
-  return SUDO_MARKERS.some((re) => re.test(head) || re.test(src));
+  if (SUDO_MARKERS.some((re) => re.test(head) || re.test(src))) return true;
+  // Marker-stripped Sudo output still carries its structural fingerprints.
+  return sudoStructuralScore(src) >= 2;
 }
 
 // ── arithmetic evaluator (integers, + - * and parens only) ───────────────────
@@ -419,6 +447,7 @@ module.exports = {
   deobfuscate,
   buildDump,
   isSudoOwned,
+  sudoStructuralScore,
   evalArith,
   decodeCharCalls,
   decodeStringEscapes,
