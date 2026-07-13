@@ -341,7 +341,10 @@ app.post('/deobf', async (req, res) => {
       else if (which.includes('moonsec')) result = runMoonSec(source);
       else if (which.includes('prometheus')) result = prometheus.deobfuscate(source);
       else if (which.includes('moonveil')) result = runMoonveilStatic(source);
-      else if (which.includes('karma')) result = karma.deobfuscate(source);
+      // KarmaProtect = static string-transform obfuscator (dedicated decoder).
+      // "KarmaVM"/"Luraph" are runtime bytecode VMs with no static full-source
+      // recovery — fall through to generic best-effort (keeps the detected name).
+      else if (which.includes('karma') && !which.includes('karmavm')) result = karma.deobfuscate(source);
       else {
         // No named format matched — attempt best-effort generic recovery on ANY
         // input instead of giving up.

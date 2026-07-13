@@ -96,6 +96,67 @@ function extractPool(src) {
   return out.length ? out : null;
 }
 
+// Return the body (inside braces) of the table literal starting at the first
+// `{` on/after `fromIdx`, using brace matching (skips strings/escapes).
+function matchTable(src, fromIdx) {
+  const i = src.indexOf('{', fromIdx);
+  if (i < 0) return null;
+  let depth = 0, j = i, inStr = null;
+  for (; j < src.length; j++) {
+    const c = src[j];
+    if (inStr) {
+      if (c === '\\') { j++; continue; }
+      if (c === inStr) inStr = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { inStr = c; continue; }
+    if (c === '{') depth++;
+    else if (c === '}') { depth--; if (depth === 0) return { body: src.slice(i + 1, j), end: j }; }
+  }
+  return null;
+}
+
+// Variant-2 alphabet: a `local <id>={ <key>=<arith>, ... }` map with >=32
+// base64 entries. Keys are bare single-char identifiers (letters) or
+// ["\ddd"] char-code brackets (digits/symbols). Found by scanning every
+// `local <id>={` and keeping the first table that parses as a full alphabet.
+function extractAlphabetAny(src) {
+  const re = /\blocal\s+[A-Za-z_]\w*\s*=\s*\{/g;
+  let m;
+  while ((m = re.exec(src))) {
+    const t = matchTable(src, m.index);
+    if (!t) continue;
+    const map = {};
+    const kv = /(?:\[\s*(['"])((?:\\.|[^\\])*?)\1\s*\]|([A-Za-z_]\w*))\s*=\s*([-+*/%()\d\s.]+)/g;
+    let e;
+    while ((e = kv.exec(t.body))) {
+      const ch = e[2] !== undefined ? decodeLuaEscapes(e[2]) : e[3];
+      const val = evalArith(e[4]);
+      if (ch == null || ch.length !== 1 || val == null) continue;
+      if (val < 0 || val > 63) continue;
+      map[ch] = val;
+    }
+    if (Object.keys(map).length >= 32) return map;
+  }
+  return null;
+}
+
+// Variant-2 pool: the largest `local <id>={ "..","..",.. }` string table.
+function extractPoolAny(src) {
+  const re = /\blocal\s+[A-Za-z_]\w*\s*=\s*\{\s*['"]/g;
+  let m, best = null;
+  while ((m = re.exec(src))) {
+    const t = matchTable(src, m.index);
+    if (!t) continue;
+    const toks = [];
+    const sre = /"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'/g;
+    let e;
+    while ((e = sre.exec(t.body))) toks.push(decodeLuaEscapes(e[1] !== undefined ? e[1] : e[2]));
+    if (toks.length && (!best || toks.length > best.length)) best = toks;
+  }
+  return best;
+}
+
 // base64-decode one token using the randomised alphabet, mirroring the script's
 // own decode loop (4 symbols -> 24 bits -> 3 bytes, with '=' padding).
 function decodeToken(tok, alpha) {
@@ -185,8 +246,16 @@ const SUDO_INVITE = 'https://discord.gg/ZyXAgmSVPA';
 
 // Recover every plaintext constant from a WeAreDevs-protected script.
 function deobfuscate(src) {
-  const alpha = extractAlphabet(src);
-  const pool = extractPool(src);
+  let alpha = extractAlphabet(src);
+  let pool = extractPool(src);
+  let variant2 = false;
+  if (!alpha || !pool) {
+    // Newer WeAreDevs build (randomised base64 alphabet in a `local u={...}`
+    // map + separate `local K={...}` pool, different from the S/D layout).
+    const a2 = extractAlphabetAny(src);
+    const p2 = extractPoolAny(src);
+    if (a2 && p2) { alpha = a2; pool = p2; variant2 = true; }
+  }
   if (!alpha || !pool) {
     return {
       output: null,
@@ -205,13 +274,16 @@ function deobfuscate(src) {
   for (const s of printable) { if (!seen.has(s)) { seen.add(s); uniq.push(s); } }
 
   // Attempt full static devirtualization: rebuild the flattened VM into readable
-  // per-function Lua with real control flow and all constants inlined.
+  // per-function Lua with real control flow and all constants inlined. The
+  // devirt emitter targets the S/D-pool VM layout; skip it for variant-2 builds.
   let devirt = null;
-  try {
-    // Lazy require to avoid a circular dependency at module-load time.
-    devirt = require('./tools/wearedevs/emit.js').devirt(src);
-  } catch (e) {
-    devirt = null;
+  if (!variant2) {
+    try {
+      // Lazy require to avoid a circular dependency at module-load time.
+      devirt = require('./tools/wearedevs/emit.js').devirt(src);
+    } catch (e) {
+      devirt = null;
+    }
   }
 
   if (devirt && devirt.output) {
@@ -258,8 +330,13 @@ function deobfuscate(src) {
 // Raw dump: the full decoded pool in original index order (incl. duplicates/blanks),
 // so a reader can map VM constant indices back to their plaintext values.
 function buildDump(src) {
-  const alpha = extractAlphabet(src);
-  const pool = extractPool(src);
+  let alpha = extractAlphabet(src);
+  let pool = extractPool(src);
+  if (!alpha || !pool) {
+    const a2 = extractAlphabetAny(src);
+    const p2 = extractPoolAny(src);
+    if (a2 && p2) { alpha = a2; pool = p2; }
+  }
   if (!alpha || !pool) return '';
   const decoded = pool.map((t) => (t === '' ? '' : decodeToken(t, alpha)));
   const lines = [];

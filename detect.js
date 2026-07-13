@@ -37,6 +37,23 @@ const KNOWN = [
     struct: [/\(\s*_?\w+\s*-\s*1\s*\)\s*\*\s*66\s*\+\s*\(\s*_?\w+\s*-\s*1\s*\)/],
   },
   {
+    name: 'Luraph',
+    // Luraph is the strongest commercial Lua obfuscator. Watermark comment
+    // (`Luraph Obfuscator vX` / lura.ph) plus its `LPH!`/`LPH|` bytecode blob
+    // markers. Full source recovery is not statically achievable — routed to
+    // best-effort recovery.
+    marks: [/Luraph Obfuscator/i, /lura\.ph/i, /LPH_?(NO_VIRTUALIZE|JIT|ENCFUNC)/],
+    struct: [/return\s*\(\s*\{/, /LPH[!|]/],
+  },
+  {
+    name: 'KarmaVM',
+    // "Karma Obfuscator [luarmor-bot...]" — a runtime register-VM (distinct
+    // from KarmaProtect's static string transforms). Its constant-fetch table
+    // `o.h`/`L[...]` register model + luarmor-bot host fingerprint it.
+    marks: [/Karma Obfuscator/i, /luarmor-bot/i],
+    struct: [/return\s*\(\s*\{\s*\w+\s*=\s*function\s*\(/, /\bL\[\d{3,5}\]/],
+  },
+  {
     name: 'KarmaProtect',
     marks: [/Protected By Karma Lua Hosting/i, /--\[\[karma:\d+\]\]/, /karma-lua-hosting/i],
     // return(function(...) ... end)(...) shell + the string.char/byte alias
