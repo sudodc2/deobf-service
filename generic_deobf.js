@@ -240,6 +240,18 @@ function foldHexNumbers(src) {
   });
 }
 
+// Convert binary integer literals (0b110001, 0B10) to decimal. Same token-aware
+// guards as foldHexNumbers so strings / comments / identifiers are never touched.
+function foldBinNumbers(src) {
+  const re = /("(?:\\.|[^"\\])*")|('(?:\\.|[^'\\])*')|(\[(=*)\[[\s\S]*?\]\4\])|(--\[(=*)\[[\s\S]*?\]\6\])|(--[^\n]*)|((?<![\w.])0[bB][01]+(?![\w.]))/g;
+  return src.replace(re, (m, dq, sq, longstr, _l1, longcmt, _l2, linecmt, bin) => {
+    if (!bin) return m;
+    const n = parseInt(bin.slice(2), 2);
+    if (!Number.isSafeInteger(n)) return m;
+    return String(n);
+  });
+}
+
 // Remove obviously-dead junk statements.
 function stripJunk(src) {
   return src
@@ -398,6 +410,7 @@ function deobfuscate(src) {
   s = safePass(s, foldTableConcat, 'Folded table.concat of literal arrays.', notes);
   s = safePass(s, foldArith, 'Folded integer arithmetic constants.', notes);
   s = safePass(s, foldHexNumbers, 'Converted hexadecimal literals to decimal.', notes);
+  s = safePass(s, foldBinNumbers, 'Converted binary literals to decimal.', notes);
   s = safePass(s, tidyAliases, 'Resolved _G / string / table index aliases.', notes);
   s = safePass(s, stripJunk, 'Removed dead junk statements.', notes);
 
@@ -471,6 +484,7 @@ module.exports = {
   foldTableConcat,
   foldArith,
   foldHexNumbers,
+  foldBinNumbers,
   stripJunk,
   SUDO_INVITE,
 };
