@@ -125,6 +125,47 @@ function decodeToken(tok, alpha) {
   return Buffer.from(N).toString('latin1');
 }
 
+// Parse the shuffle loop's ipairs({{lo,hi},...}) sub-range list. The VM reverses
+// each S[lo..hi] range in place BEFORE base64-decoding, so we must replay it to
+// recover the correct constant-pool ordering (needed for VM index resolution).
+function extractShuffle(src) {
+  const m = /ipairs\s*\(\s*\{\s*(\{[\s\S]*?\})\s*\}\s*\)/.exec(src);
+  if (!m) return [];
+  const body = m[1];
+  const pairs = [];
+  const re = /\{\s*([^,{}]+?)\s*[,;]\s*([^,{}]+?)\s*\}/g;
+  let e;
+  while ((e = re.exec(body))) {
+    const lo = evalArith(e[1]); const hi = evalArith(e[2]);
+    if (lo != null && hi != null) pairs.push([lo, hi]);
+  }
+  return pairs;
+}
+
+// M(idx) = S[idx - OFFSET]; recover OFFSET from `local function M(M)return S[M-(..)]end`.
+function extractMOffset(src) {
+  const m = /function\s+M\s*\(\s*M\s*\)\s*return\s+S\s*\[\s*M\s*-\s*\(([^)]*)\)\s*\]/.exec(src);
+  if (!m) return null;
+  return evalArith(m[1]);
+}
+
+function reverseRange(arr, lo, hi) {
+  lo -= 1; hi -= 1; // 1-based inclusive -> 0-based
+  while (lo < hi) { const t = arr[lo]; arr[lo] = arr[hi]; arr[hi] = t; lo++; hi--; }
+}
+
+// Fully recover the decoded constant pool in correct VM index order, plus the
+// M() offset so callers can resolve M(k) -> S[k-offset].
+function decodePool(src) {
+  const alpha = extractAlphabet(src);
+  const raw = extractPool(src);
+  if (!alpha || !raw) return null;
+  const arr = raw.slice();
+  for (const [lo, hi] of extractShuffle(src)) reverseRange(arr, lo, hi);
+  const S = arr.map((t) => (t === '' ? '' : decodeToken(t, alpha)));
+  return { S, offset: extractMOffset(src), alpha };
+}
+
 function toLuaString(s) {
   let out = '"';
   for (let i = 0; i < s.length; i++) {
@@ -163,10 +204,38 @@ function deobfuscate(src) {
   const seen = new Set();
   for (const s of printable) { if (!seen.has(s)) { seen.add(s); uniq.push(s); } }
 
+  // Attempt full static devirtualization: rebuild the flattened VM into readable
+  // per-function Lua with real control flow and all constants inlined.
+  let devirt = null;
+  try {
+    // Lazy require to avoid a circular dependency at module-load time.
+    devirt = require('./tools/wearedevs/emit.js').devirt(src);
+  } catch (e) {
+    devirt = null;
+  }
+
+  if (devirt && devirt.output) {
+    const notes = [
+      'WeAreDevs obfuscator (wearedevs.net) detected — a register-based, control-flow-flattened VM.',
+      `Statically devirtualised: recovered the VM's constant pool (${decoded.filter((s) => s).length} entries) and rebuilt the flattened dispatcher into ${devirt.functions} function(s) / ${devirt.blocks} basic blocks with real control flow, all constants inlined.`,
+      'This is a functionally-faithful reconstruction. Original local names & comments were discarded by the obfuscator, so registers/temps use generated names (R[n], generated locals). Register-lifetime bookkeeping (refcounts) is stripped for readability. Full raw pool + CFG in dump.lua.',
+    ];
+    return {
+      output: devirt.output,
+      decodedConstants: uniq,
+      devirt: true,
+      functions: devirt.functions,
+      blocks: devirt.blocks,
+      partial: true,
+      notes,
+    };
+  }
+
+  // Fallback: static lift unavailable for this variant — return the constant pool.
   const notes = [
     'WeAreDevs obfuscator (wearedevs.net) detected — a register-based VM format.',
     `Replayed the script's own string-pool decoder: recovered ${decoded.filter((s) => s).length} constants (${uniq.length} unique printable).`,
-    'The control flow is genuinely virtualised (custom VM), so byte-exact source cannot be statically reconstructed — but every string/constant the script uses is recovered below in plaintext.',
+    'Static devirtualization did not complete for this build variant, so byte-exact source could not be rebuilt — but every string/constant the script uses is recovered below in plaintext.',
   ];
 
   const lines = [];
@@ -200,6 +269,27 @@ function buildDump(src) {
   lines.push('');
   decoded.forEach((s, i) => { lines.push('[' + (i + 1) + '] ' + toLuaString(s)); });
   lines.push('');
+
+  // Append the reconstructed control-flow graph (basic blocks + resolved edges).
+  try {
+    const cfgmod = require('./tools/wearedevs/cfg.js');
+    const cfg = cfgmod.build(src);
+    const kinds = {};
+    cfg.blocks.forEach((b) => { kinds[b.edge.kind] = (kinds[b.edge.kind] || 0) + 1; });
+    lines.push('-- ===== Reconstructed VM control-flow graph =====');
+    lines.push('-- dispatcher state var: ' + cfg.stateVar);
+    lines.push('-- blocks: ' + cfg.blocks.length + '  edges: ' + JSON.stringify(kinds));
+    lines.push('');
+    cfg.blocks.forEach((b) => {
+      const e = b.edge;
+      let s = 'block #' + b.id + '  state[' + b.lo + ',' + b.hi + ')  -> ' + e.kind;
+      if (e.kind === 'jump') { const t = cfg.blockForState(e.to); s += ' #' + (t ? t.id : '?'); }
+      if (e.kind === 'branch') { const ta = cfg.blockForState(e.tTo); const fb = cfg.blockForState(e.fTo); s += ' T:#' + (ta ? ta.id : '?') + ' F:#' + (fb ? fb.id : '?'); }
+      lines.push(s);
+    });
+    lines.push('');
+  } catch (e) { /* CFG unavailable for this variant */ }
+
   return lines.join('\n');
 }
 
@@ -209,6 +299,9 @@ module.exports = {
   buildDump,
   extractAlphabet,
   extractPool,
+  extractShuffle,
+  extractMOffset,
+  decodePool,
   decodeToken,
   evalArith,
   SUDO_INVITE,
