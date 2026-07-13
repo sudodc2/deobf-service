@@ -152,6 +152,68 @@ async function safeFetch(url) {
   throw new Error('too many redirects');
 }
 
+// Strip Lua comments so we can judge how much *real* code a script has (used to
+// tell a thin loader stub apart from a full script that merely calls loadstring).
+function stripLuaComments(src) {
+  return src
+    .replace(/--\[(=*)\[[\s\S]*?\]\1\]/g, '')
+    .replace(/--[^\n]*/g, '');
+}
+
+// A "thin loader" is a script whose entire job is to fetch+run a remote payload
+// (e.g. `loadstring(game:HttpGet("..."))()`), with essentially no logic of its
+// own. We only auto-follow these — a full script that happens to call HttpGet is
+// left alone so we don't chase its sub-modules.
+function looksLikeThinLoader(src) {
+  const code = stripLuaComments(src).replace(/\s+/g, ' ').trim();
+  if (!code || code.length > 600) return false;
+  if (!extractRemoteUrl(src)) return false;
+  // Must be dominated by a loadstring/HttpGet/require-style fetch call.
+  return /(loadstring|HttpGet|HttpGetAsync|GetAsync|readfile|request|http_request|syn\.request)/i.test(code);
+}
+
+// Detect an anti-bot / challenge / error HTML page returned instead of Lua so we
+// stop the chain and report honestly instead of trying to "deobfuscate" HTML.
+function looksLikeHtmlOrChallenge(src) {
+  const h = src.slice(0, 600).toLowerCase();
+  return /<!doctype html|<html|just a moment|cf-browser-verification|challenge-platform|attention required|cloudflare/.test(h);
+}
+
+// Terminal gated loaders: the luarmor `_bsdata` bootstrap (decrypts + fetches a
+// key-locked script at runtime) and the luarmor "executor not supported" kick
+// stub. Both are dead-ends for static recovery, so the chain stops here.
+function isGatedTerminal(src) {
+  if (/\b_bsdata\d*\s*=/.test(src) && /luarmor/i.test(src)) return 'luarmor key-gated bootstrap';
+  if (/executor is not supported by luarmor/i.test(src)) return 'luarmor unsupported-executor stub';
+  return null;
+}
+
+// Follow a chain of thin loaders (onyx -> luarmor -> ...) up to a small cap,
+// re-using the SSRF-guarded fetch and refusing to revisit a URL. Returns the
+// final payload + the visited chain + a stop reason for transparency.
+async function resolveLoaderChain(startSrc, startUrl) {
+  const MAX_LOADER_HOPS = 4;
+  const chain = [];
+  let src = startSrc;
+  let seen = new Set(startUrl ? [startUrl] : []);
+  let stop = null;
+  for (let hop = 0; hop < MAX_LOADER_HOPS; hop++) {
+    if (looksLikeHtmlOrChallenge(src)) { stop = 'anti-bot/challenge or non-Lua page'; break; }
+    const gated = isGatedTerminal(src);
+    if (gated) { stop = gated; break; }
+    if (!looksLikeThinLoader(src)) break;
+    const next = extractRemoteUrl(src);
+    if (!next || seen.has(next)) { stop = next ? 'loader loop' : null; break; }
+    seen.add(next);
+    let fetched;
+    try { fetched = await safeFetch(next); }
+    catch (e) { stop = `could not fetch ${next} (${e && e.message})`; break; }
+    chain.push(next);
+    src = fetched;
+  }
+  return { src, chain, stop };
+}
+
 function tmpdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'deob-'));
 }
@@ -297,13 +359,93 @@ app.post('/deobf', async (req, res) => {
       catch (e) { console.error('safeFetch(bare) failed:', e && e.message); return res.status(400).json({ ok: false, error: 'could not fetch the provided URL' }); }
     }
 
-    // loadstring/HttpGet stub -> fetch the real payload first
+    // loadstring/HttpGet stub -> fetch the real payload first. Record the reason
+    // if the fetch fails so we can report a gated endpoint honestly instead of
+    // silently echoing the loader line back as "recovered source".
+    let loaderChain = [];
+    let loaderStop = null;
     if (!fetchedFrom) {
       const stubUrl = extractRemoteUrl(source);
       if (stubUrl) {
-        try { source = await safeFetch(stubUrl); fetchedFrom = stubUrl; } catch (e) { /* keep original */ }
+        try { source = await safeFetch(stubUrl); fetchedFrom = stubUrl; }
+        catch (e) { loaderStop = `could not fetch ${stubUrl} (${e && e.message})`; }
       }
     }
+
+    // Follow further loader hops (e.g. onyxv2 -> luarmor loader -> ...). We only
+    // chase scripts that are *nothing but* a loader stub, and stop at an anti-bot
+    // page or a key-gated endpoint, reporting the chain + why we stopped.
+    if (fetchedFrom) {
+      const resolved = await resolveLoaderChain(source, fetchedFrom);
+      if (resolved.chain.length) {
+        source = resolved.src;
+        loaderChain = resolved.chain;
+        fetchedFrom = resolved.chain[resolved.chain.length - 1];
+      }
+      if (resolved.stop) loaderStop = resolved.stop;
+    }
+
+    // If, after following everything we safely can, the payload is STILL just a
+    // loader stub (target un-fetchable) or an anti-bot/challenge page, don't
+    // pretend we recovered source — report the gate honestly as a partial result.
+    // A key-gated terminal (luarmor bootstrap / unsupported-executor stub) has no
+    // end-source statically present, so treat it as loader-only rather than
+    // claiming "full" recovery of the bootstrap.
+    const gatedTerminal = isGatedTerminal(source);
+    const finalIsLoader = looksLikeThinLoader(source) || !!gatedTerminal;
+    const finalIsChallenge = looksLikeHtmlOrChallenge(source);
+    if (finalIsLoader || finalIsChallenge) {
+      const gateUrl = extractRemoteUrl(source) || fetchedFrom;
+      const isSyscure = /syscure/i.test(loaderChain.join(' ') + ' ' + (fetchedFrom || '') + ' ' + source);
+      const notes = [];
+      if (loaderChain.length) notes.push(`Followed loader chain (${loaderChain.length} hop${loaderChain.length > 1 ? 's' : ''}): ${loaderChain.join(' -> ')}`);
+      if (isSyscure) {
+        notes.push('Syscure uses a multi-stage challenge-response delivery, so the source is not statically fetchable by design:');
+        notes.push('1) grabber gate — a plain HTTP client (no executor User-Agent) is served a Cloudflare challenge / decoy, which is the 403 you see here. 2) single-use slug + executor math challenge. 3) IP-fingerprinted, one-time HMAC payload token (short TTL). 4) the final Lua is heavy-obfuscated per request. Only a real executor that solves the challenge in-session receives the payload.');
+        notes.push('To analyze the actual Syscure body, capture the final delivered script from your executor and submit that raw body — the service will run best-effort recovery (decode strings/constants + structure). The final payload is a heavy per-request VM (Luraph-family method-table VM), so like Luraph it is best-effort, not guaranteed clean source. The loadstring URL alone cannot yield any source.');
+      } else if (finalIsChallenge) {
+        notes.push(`The endpoint (${fetchedFrom || gateUrl}) is behind an anti-bot/Cloudflare challenge, so its real body can't be fetched server-side. This is not a bypassable step — the actual script is delivered only to a verified client.`);
+      } else if (gatedTerminal) {
+        notes.push(`This resolves to a ${gatedTerminal}: it decrypts and fetches the real, key-locked script from the protection provider's servers at runtime. The underlying source is delivered only to a licensed/keyed client, so it is not statically present here.`);
+      } else {
+        notes.push(`This is a thin loader that fetches its real script at runtime from ${gateUrl || 'a remote endpoint'}. That endpoint is key-gated / not publicly fetchable, so the underlying source is not statically present here.`);
+        if (loaderStop) notes.push(`Stopped at: ${loaderStop}.`);
+      }
+      notes.push('No obfuscated body was recovered — there is nothing to deobfuscate beyond the loader itself.');
+      const urls = (source.match(URL_RE) || []).map((u) => u.replace(/[)\]"'`,;]+$/, ''));
+      const dumpLines = [
+        '-- Sudo Deobfuscator — loader analysis',
+        '-- The submitted script is a thin loader; the real payload is fetched at runtime.',
+        '',
+        `-- ===== Loader chain (${loaderChain.length}) =====`,
+        ...loaderChain.map((u, i) => `[${i + 1}] ${u}`),
+        '',
+        `-- ===== Remote URL(s) referenced (${urls.length}) =====`,
+        ...urls.map((u, i) => `[${i + 1}] ${u}`),
+      ];
+      // Name the protection provider when we can (syscure/luarmor/…) so the label
+      // is specific instead of a generic "Loader".
+      const provider = detectObfuscator(source);
+      const chainStr = loaderChain.join(' ') + ' ' + (fetchedFrom || '');
+      let providerName = 'Loader';
+      if (provider.name && provider.confidence >= 60) providerName = provider.name;
+      else if (/syscure/i.test(chainStr)) providerName = 'Syscure';
+      else if (/luarmor/i.test(chainStr) || gatedTerminal) providerName = 'Luarmor';
+      return res.json({
+        ok: true,
+        detected: { name: providerName, confidence: 90, signals: [finalIsChallenge ? 'anti-bot gated endpoint' : 'thin remote loader'] },
+        tool: providerName === 'Loader' ? 'Loader' : `${providerName} (loader)`,
+        fetchedFrom,
+        loaderChain,
+        output: source.trim(),
+        partial: true,
+        loaderOnly: true,
+        notes,
+        dump: dumpLines.join('\n') + '\n',
+      });
+    }
+    const loaderNotes = [];
+    if (loaderChain.length) loaderNotes.push(`Followed loader chain (${loaderChain.length} hop${loaderChain.length > 1 ? 's' : ''}): ${loaderChain.join(' -> ')}`);
 
     // Never deobfuscate our own Sudo-protected output. Detection uses visible
     // markers AND strip-resistant structural fingerprints, so removing the top
@@ -401,7 +543,8 @@ app.post('/deobf', async (req, res) => {
     if (!which && detected && detected.confidence < 30) {
       outDetected = { name: null, confidence: 0, signals: ['no known-format signature (generic best-effort)'] };
     }
-    return res.json({ ok: true, detected: outDetected, tool, fetchedFrom, ...result, dump });
+    if (loaderNotes.length && result) result = { ...result, notes: [...loaderNotes, ...(result.notes || [])] };
+    return res.json({ ok: true, detected: outDetected, tool, fetchedFrom, loaderChain, ...result, dump });
   } catch (e) {
     console.error('deobf handler error:', e && e.stack ? e.stack : e);
     return res.status(500).json({ ok: false, error: 'internal error' });

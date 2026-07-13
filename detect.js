@@ -54,6 +54,16 @@ const KNOWN = [
     struct: [/return\s*\(\s*\{\s*\w+\s*=\s*function\s*\(/, /\bL\[\d{3,5}\]/],
   },
   {
+    name: 'Syscure',
+    // Syscure (auth.syscure.vip / syscure.vip) delivers its obfuscated payload
+    // from a `/obf/<hash>.lua` endpoint that sits behind a Cloudflare anti-bot
+    // challenge, so the loadstring host is the reliable fingerprint. The payload
+    // itself (when a raw body is submitted) is a Luau method-table VM similar to
+    // the Luraph family — routed to best-effort recovery.
+    marks: [/syscure\.vip/i, /\bsyscure\b/i],
+    struct: [/\/obf\/[0-9a-f]{16,}\.lua/i],
+  },
+  {
     name: 'KarmaProtect',
     marks: [/Protected By Karma Lua Hosting/i, /--\[\[karma:\d+\]\]/, /karma-lua-hosting/i],
     // return(function(...) ... end)(...) shell + the string.char/byte alias
