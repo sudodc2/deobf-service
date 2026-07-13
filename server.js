@@ -16,6 +16,7 @@ const ironveil = require('./tools/ironveil/index.js');
 const prometheus = require('./prometheus_deobf.js');
 const karma = require('./karma_deobf.js');
 const kersone = require('./kersone_deobf.js');
+const wearedevs = require('./wearedevs_deobf.js');
 const generic = require('./generic_deobf.js');
 
 const ROOT = __dirname;
@@ -246,15 +247,25 @@ app.post('/deobf', async (req, res) => {
     // Kers0ne "Base66 Multi-XOR" is a very specific self-contained decoder;
     // give it its own high-confidence detection ahead of the generic detector.
     const kersoneScore = kersone.looksLikeKersone(source);
+    const wearedevsScore = wearedevs.looksLikeWeAreDevs(source);
     let detected = detectObfuscator(source);
     if (kersoneScore >= 6 && kersoneScore >= detected.confidence / 15) {
       detected = { name: 'Kers0ne', confidence: Math.min(99, kersoneScore * 15), signals: [`base66 multi-xor (score ${kersoneScore})`] };
+    }
+    // WeAreDevs is a self-contained string-pool decoder + register VM; give it a
+    // dedicated high-confidence route ahead of the generic detector.
+    if (wearedevsScore >= 8) {
+      detected = { name: 'WeAreDevs', confidence: Math.min(99, wearedevsScore * 9), signals: [`wearedevs vm (score ${wearedevsScore})`] };
     }
     const which = forced || ((detected.confidence >= 30 ? detected.name : '') || '').toLowerCase();
     let result;
     let tool = detected.name || forced;
     try {
       if (which.includes('kers')) result = runKersone(source);
+      else if (which.includes('wearedevs')) {
+        result = wearedevs.deobfuscate(source);
+        if (result && result._fallback) result = generic.deobfuscate(source);
+      }
       else if (which.includes('hercules')) result = runHercules(source);
       else if (which.includes('ironveil')) result = runIronveil(source);
       else if (which.includes('moonsec')) result = runMoonSec(source);
@@ -292,9 +303,13 @@ app.post('/deobf', async (req, res) => {
       } catch (_) { /* keep the tool's partial output */ }
     }
 
-    const dump = (result && result.output && !result.protected && !result.refused)
-      ? generic.buildDump(result.output)
-      : null;
+    // Prefer the WeAreDevs full constant-pool dump when that route ran; else the
+    // generic string/number dump built from the reconstructed output.
+    let dump = null;
+    if (result && !result.protected && !result.refused) {
+      if (which.includes('wearedevs')) dump = wearedevs.buildDump(source) || null;
+      if (!dump && result.output) dump = generic.buildDump(result.output);
+    }
     return res.json({ ok: true, detected, tool, fetchedFrom, ...result, dump });
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e.message || e) });
