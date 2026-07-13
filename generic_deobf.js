@@ -225,6 +225,21 @@ function foldTableConcat(src) {
   });
 }
 
+// Convert hexadecimal integer literals (0x1c, 0X6A, 0xFFp0-free) to decimal so
+// the reconstructed source is easier to read. Skips anything inside string
+// literals / comments and leaves hex floats (0x1p4) and hex with fractional or
+// binary-exponent parts untouched.
+function foldHexNumbers(src) {
+  // token-aware scan so we never rewrite hex that appears inside a string
+  const re = /("(?:\\.|[^"\\])*")|('(?:\\.|[^'\\])*')|(\[(=*)\[[\s\S]*?\]\4\])|(--\[(=*)\[[\s\S]*?\]\6\])|(--[^\n]*)|((?<![\w.])0[xX][0-9a-fA-F]+(?![\w.]))/g;
+  return src.replace(re, (m, dq, sq, longstr, _l1, longcmt, _l2, linecmt, hex) => {
+    if (!hex) return m; // strings/comments passed through verbatim
+    const n = parseInt(hex, 16);
+    if (!Number.isSafeInteger(n)) return m;
+    return String(n);
+  });
+}
+
 // Remove obviously-dead junk statements.
 function stripJunk(src) {
   return src
@@ -382,6 +397,7 @@ function deobfuscate(src) {
   s = safePass(s, foldConcat, 'Folded adjacent string concatenation.', notes);
   s = safePass(s, foldTableConcat, 'Folded table.concat of literal arrays.', notes);
   s = safePass(s, foldArith, 'Folded integer arithmetic constants.', notes);
+  s = safePass(s, foldHexNumbers, 'Converted hexadecimal literals to decimal.', notes);
   s = safePass(s, tidyAliases, 'Resolved _G / string / table index aliases.', notes);
   s = safePass(s, stripJunk, 'Removed dead junk statements.', notes);
 
@@ -454,6 +470,7 @@ module.exports = {
   foldConcat,
   foldTableConcat,
   foldArith,
+  foldHexNumbers,
   stripJunk,
   SUDO_INVITE,
 };
