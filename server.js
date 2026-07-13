@@ -12,7 +12,7 @@ const dns = require('node:dns').promises;
 const net = require('node:net');
 const crypto = require('node:crypto');
 
-const { detectObfuscator } = require('./detect.js');
+const { detectObfuscator, looksLikeLuraph } = require('./detect.js');
 const ironveil = require('./tools/ironveil/index.js');
 const prometheus = require('./prometheus_deobf.js');
 const karma = require('./karma_deobf.js');
@@ -327,6 +327,15 @@ app.post('/deobf', async (req, res) => {
     if (wearedevsScore >= 8) {
       detected = { name: 'WeAreDevs', confidence: Math.min(99, wearedevsScore * 9), signals: [`wearedevs vm (score ${wearedevsScore})`] };
     }
+    // Luraph structural fingerprint — catches watermark-stripped builds (e.g.
+    // onyxv2's ASCII banner) that the comment-based detector would miss/mislabel.
+    const luraphScore = looksLikeLuraph(source);
+    // Only claim Luraph when no stronger, more specific format already matched
+    // (KarmaVM/WeAreDevs/etc. also use bit32/method-tables) — override weak or
+    // already-Luraph/Moonveil guesses, never a high-confidence dedicated match.
+    if (luraphScore >= 7 && (detected.confidence < 60 || /^(luraph|moonveil)$/i.test(detected.name || ''))) {
+      detected = { name: 'Luraph', confidence: Math.min(99, luraphScore * 9), signals: [`luraph vm (structural score ${luraphScore})`] };
+    }
     const which = forced || ((detected.confidence >= 30 ? detected.name : '') || '').toLowerCase();
     let result;
     let tool = detected.name || forced;
@@ -385,7 +394,14 @@ app.post('/deobf', async (req, res) => {
       if (which.includes('wearedevs')) dump = wearedevs.buildDump(source) || null;
       if (!dump && result.output) dump = generic.buildDump(result.output);
     }
-    return res.json({ ok: true, detected, tool, fetchedFrom, ...result, dump });
+    // Don't surface a sub-threshold detector guess as if it were identified.
+    // If the label wasn't confident enough to route (which===''), present it as
+    // unrecognized rather than misleading (e.g. a 15%-confidence "Moonveil").
+    let outDetected = detected;
+    if (!which && detected && detected.confidence < 30) {
+      outDetected = { name: null, confidence: 0, signals: ['no known-format signature (generic best-effort)'] };
+    }
+    return res.json({ ok: true, detected: outDetected, tool, fetchedFrom, ...result, dump });
   } catch (e) {
     console.error('deobf handler error:', e && e.stack ? e.stack : e);
     return res.status(500).json({ ok: false, error: 'internal error' });

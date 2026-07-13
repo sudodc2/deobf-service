@@ -65,6 +65,23 @@ const KNOWN = [
   },
 ];
 
+// Structural Luraph fingerprint (survives watermark removal — e.g. onyxv2 which
+// replaces the `-- Luraph Obfuscator vX` comment with an ASCII banner). Luraph
+// v13/v14 emits a method-table VM: `return({ <k>=function(self,...) ... })` that
+// is immediately invoked via a `}):<ident>()(...)` tail, uses bit32.* ops, and
+// packs constants as obfuscated hex/binary literals (often with `_` separators).
+function looksLikeLuraph(src) {
+  let score = 0;
+  if (/return\s*\(\s*\{\s*[A-Za-z_]\w*\s*=\s*function\s*\(/.test(src.slice(0, 4000))) score += 3;
+  if (/\}\s*\)\s*:\s*[A-Za-z_]\w*\s*\(\s*\)\s*\(\s*\.\.\.\s*\)\s*;?\s*$/.test(src.trimEnd())) score += 4;
+  if (/\bbit32\.(band|bor|bxor|bnot|lshift|rshift|lrotate|rrotate|countlz|countrz)\b/.test(src)) score += 2;
+  if (/0[xX][0-9a-fA-F]+_|0[bB][01]+_/.test(src)) score += 1; // Luau `_` digit separators
+  // many single/double-char method keys mapping to functions (VM opcode handlers)
+  const handlers = (src.slice(0, 20000).match(/[,{]\s*[A-Za-z_]\w?\s*=\s*function\s*\(/g) || []).length;
+  if (handlers >= 8) score += 2;
+  return score;
+}
+
 function detectObfuscator(src) {
   const head = src.slice(0, 4096);
   let best = { name: null, confidence: 0, signals: [] };
@@ -83,4 +100,4 @@ function detectObfuscator(src) {
   return best.name ? best : { name: null, confidence: 0, signals: [] };
 }
 
-module.exports = { detectObfuscator };
+module.exports = { detectObfuscator, looksLikeLuraph };

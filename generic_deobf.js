@@ -182,7 +182,7 @@ function decodeStringEscapes(src) {
   return src.replace(strRe, (lit) => {
     const q = lit[0];
     const body = lit.slice(1, -1);
-    if (!/\\(?:\d{1,3}|x[0-9a-fA-F]{2})/.test(body)) return lit;
+    if (!/\\(?:\d{1,3}|x[0-9a-fA-F]{2}|z|u\{[0-9a-fA-F]+\})/.test(body)) return lit;
     let decoded = '';
     for (let k = 0; k < body.length; k++) {
       if (body[k] === '\\') {
@@ -190,6 +190,15 @@ function decodeStringEscapes(src) {
         let m;
         if ((m = /^x([0-9a-fA-F]{2})/.exec(rest))) { decoded += String.fromCharCode(parseInt(m[1], 16)); k += 1 + m[1].length; }
         else if ((m = /^(\d{1,3})/.exec(rest))) { decoded += String.fromCharCode(parseInt(m[1], 10) & 0xff); k += m[1].length; }
+        // Luau \u{HHHH} unicode escape -> UTF-8 bytes.
+        else if ((m = /^u\{([0-9a-fA-F]+)\}/.exec(rest))) {
+          const cp = parseInt(m[1], 16);
+          try { decoded += Buffer.from(String.fromCodePoint(cp), 'utf8').toString('latin1'); }
+          catch (_) { decoded += body[k] + (body[k + 1] || ''); }
+          k += 1 + m[0].length - 1;
+        }
+        // Luau \z skips all following whitespace (incl. newlines).
+        else if (rest[0] === 'z') { let j = k + 2; while (j < body.length && /\s/.test(body[j])) j++; k = j - 1; }
         else { decoded += body[k] + (body[k + 1] || ''); k += 1; }
       } else decoded += body[k];
     }
@@ -231,10 +240,11 @@ function foldTableConcat(src) {
 // binary-exponent parts untouched.
 function foldHexNumbers(src) {
   // token-aware scan so we never rewrite hex that appears inside a string
-  const re = /("(?:\\.|[^"\\])*")|('(?:\\.|[^'\\])*')|(\[(=*)\[[\s\S]*?\]\4\])|(--\[(=*)\[[\s\S]*?\]\6\])|(--[^\n]*)|((?<![\w.])0[xX][0-9a-fA-F]+(?![\w.]))/g;
+  // Allow Luau `_` digit separators inside the literal (0x56_d4, 0xFF__).
+  const re = /("(?:\\.|[^"\\])*")|('(?:\\.|[^'\\])*')|(\[(=*)\[[\s\S]*?\]\4\])|(--\[(=*)\[[\s\S]*?\]\6\])|(--[^\n]*)|((?<![\w.])0[xX][0-9a-fA-F][0-9a-fA-F_]*(?![\w.]))/g;
   return src.replace(re, (m, dq, sq, longstr, _l1, longcmt, _l2, linecmt, hex) => {
     if (!hex) return m; // strings/comments passed through verbatim
-    const n = parseInt(hex, 16);
+    const n = parseInt(hex.replace(/_/g, ''), 16);
     if (!Number.isSafeInteger(n)) return m;
     return String(n);
   });
@@ -243,10 +253,10 @@ function foldHexNumbers(src) {
 // Convert binary integer literals (0b110001, 0B10) to decimal. Same token-aware
 // guards as foldHexNumbers so strings / comments / identifiers are never touched.
 function foldBinNumbers(src) {
-  const re = /("(?:\\.|[^"\\])*")|('(?:\\.|[^'\\])*')|(\[(=*)\[[\s\S]*?\]\4\])|(--\[(=*)\[[\s\S]*?\]\6\])|(--[^\n]*)|((?<![\w.])0[bB][01]+(?![\w.]))/g;
+  const re = /("(?:\\.|[^"\\])*")|('(?:\\.|[^'\\])*')|(\[(=*)\[[\s\S]*?\]\4\])|(--\[(=*)\[[\s\S]*?\]\6\])|(--[^\n]*)|((?<![\w.])0[bB][01][01_]*(?![\w.]))/g;
   return src.replace(re, (m, dq, sq, longstr, _l1, longcmt, _l2, linecmt, bin) => {
     if (!bin) return m;
-    const n = parseInt(bin.slice(2), 2);
+    const n = parseInt(bin.slice(2).replace(/_/g, ''), 2);
     if (!Number.isSafeInteger(n)) return m;
     return String(n);
   });
