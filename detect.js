@@ -54,6 +54,17 @@ const KNOWN = [
     struct: [/return\s*\(\s*\{\s*\w+\s*=\s*function\s*\(/, /\bL\[\d{3,5}\]/],
   },
   {
+    name: 'Voltils',
+    // Voltils (voltils.cc/load/<slug>/run) — a key-system-gated loader delivered
+    // from behind a Cloudflare managed challenge. The loadstring host + `/load/…/run`
+    // route are the reliable fingerprint; the real script is served only to a keyed,
+    // verified executor session.
+    marks: [/voltils\.cc/i, /Voltils Obfuscation v[\d.]+/i, /dsc\.gg\/Voltils/i, /\bvoltils\b/i],
+    // Body fingerprints: the `__voltils_<rand>` global the header installs, and the
+    // loadstring `/load/<slug>/run` route. Either raises confidence past threshold.
+    struct: [/__voltils_[A-Za-z0-9]+/, /voltils\.cc\/load\/[A-Za-z0-9_-]+\/run/i],
+  },
+  {
     name: 'Syscure',
     // Syscure (auth.syscure.vip / syscure.vip) delivers its obfuscated payload
     // from a `/obf/<hash>.lua` endpoint that sits behind a Cloudflare anti-bot

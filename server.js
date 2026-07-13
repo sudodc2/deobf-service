@@ -396,10 +396,16 @@ app.post('/deobf', async (req, res) => {
     const finalIsChallenge = looksLikeHtmlOrChallenge(source);
     if (finalIsLoader || finalIsChallenge) {
       const gateUrl = extractRemoteUrl(source) || fetchedFrom;
-      const isSyscure = /syscure/i.test(loaderChain.join(' ') + ' ' + (fetchedFrom || '') + ' ' + source);
+      const chainBlob = loaderChain.join(' ') + ' ' + (fetchedFrom || '') + ' ' + source;
+      const isSyscure = /syscure/i.test(chainBlob);
+      const isVoltils = /voltils/i.test(chainBlob);
       const notes = [];
       if (loaderChain.length) notes.push(`Followed loader chain (${loaderChain.length} hop${loaderChain.length > 1 ? 's' : ''}): ${loaderChain.join(' -> ')}`);
-      if (isSyscure) {
+      if (isVoltils) {
+        notes.push('Voltils is a key-system-gated loader served from behind a Cloudflare managed challenge, so the source is not statically fetchable:');
+        notes.push('The `voltils.cc/load/<slug>/run` endpoint requires (1) a valid key obtained from their key channel and (2) passing a Cloudflare challenge — a plain HTTP client gets the challenge page (the 403 here), not the script. Only a keyed, verified executor session receives the real payload.');
+        notes.push('To analyze the actual Voltils body, capture the final delivered script from your executor and submit that raw body — the service will then run best-effort recovery. I will not bypass the key system or the anti-bot challenge.');
+      } else if (isSyscure) {
         notes.push('Syscure uses a multi-stage challenge-response delivery, so the source is not statically fetchable by design:');
         notes.push('1) grabber gate — a plain HTTP client (no executor User-Agent) is served a Cloudflare challenge / decoy, which is the 403 you see here. 2) single-use slug + executor math challenge. 3) IP-fingerprinted, one-time HMAC payload token (short TTL). 4) the final Lua is heavy-obfuscated per request. Only a real executor that solves the challenge in-session receives the payload.');
         notes.push('To analyze the actual Syscure body, capture the final delivered script from your executor and submit that raw body — the service will run best-effort recovery (decode strings/constants + structure). The final payload is a heavy per-request VM (Luraph-family method-table VM), so like Luraph it is best-effort, not guaranteed clean source. The loadstring URL alone cannot yield any source.');
@@ -429,6 +435,7 @@ app.post('/deobf', async (req, res) => {
       const chainStr = loaderChain.join(' ') + ' ' + (fetchedFrom || '');
       let providerName = 'Loader';
       if (provider.name && provider.confidence >= 60) providerName = provider.name;
+      else if (/voltils/i.test(chainStr)) providerName = 'Voltils';
       else if (/syscure/i.test(chainStr)) providerName = 'Syscure';
       else if (/luarmor/i.test(chainStr) || gatedTerminal) providerName = 'Luarmor';
       return res.json({
@@ -544,6 +551,14 @@ app.post('/deobf', async (req, res) => {
       outDetected = { name: null, confidence: 0, signals: ['no known-format signature (generic best-effort)'] };
     }
     if (loaderNotes.length && result) result = { ...result, notes: [...loaderNotes, ...(result.notes || [])] };
+    // Voltils v7.4 is a heavy compile-to-VM obfuscator (a ~20-byte input expands
+    // to ~100KB): an encoded constant-pool blob + `z()`-indexed string builders
+    // with per-request-randomised offsets, in the Luraph family. Static recovery
+    // is therefore best-effort (decoded escapes/numbers + structure), not clean
+    // original source — be explicit so we never over-claim.
+    if (result && !result.protected && /^voltils$/i.test(outDetected.name || '')) {
+      result = { ...result, partial: true, notes: ['Voltils Obfuscation v7.4 is a compile-to-VM obfuscator (Luraph-family): the real source is compiled into a virtual machine over an encoded constant pool with per-request-randomised indexing, so like Luraph this is best-effort recovery (normalised literals + structure), not byte-exact original source.', ...(result.notes || [])] };
+    }
     return res.json({ ok: true, detected: outDetected, tool, fetchedFrom, loaderChain, ...result, dump });
   } catch (e) {
     console.error('deobf handler error:', e && e.stack ? e.stack : e);

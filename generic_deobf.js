@@ -238,6 +238,19 @@ function foldTableConcat(src) {
 // the reconstructed source is easier to read. Skips anything inside string
 // literals / comments and leaves hex floats (0x1p4) and hex with fractional or
 // binary-exponent parts untouched.
+// Strip Luau `_` digit separators from every numeric literal (decimal, float,
+// hex, binary) so obfuscators that pad numbers with `_`/`__` (e.g. Voltils:
+// `1396_`, `467.0__`, `0x843__`) read cleanly. Token-aware: never touches
+// separators inside strings/comments or `_` in identifiers (the leading
+// (?<![\w.]) guard means we only start on a genuine number literal).
+function stripNumSeparators(src) {
+  const re = /("(?:\\.|[^"\\])*")|('(?:\\.|[^'\\])*')|(\[(=*)\[[\s\S]*?\]\4\])|(--\[(=*)\[[\s\S]*?\]\6\])|(--[^\n]*)|((?<![\w.])(?:0[xX][0-9a-fA-F_]+(?:\.[0-9a-fA-F_]*)?(?:[pP][-+]?[0-9_]+)?|0[bB][01_]+|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9_]+)?))/g;
+  return src.replace(re, (m, dq, sq, longstr, _l1, longcmt, _l2, linecmt, num) => {
+    if (!num || num.indexOf('_') < 0) return m;
+    return num.replace(/_/g, '');
+  });
+}
+
 function foldHexNumbers(src) {
   // token-aware scan so we never rewrite hex that appears inside a string
   // Allow Luau `_` digit separators inside the literal (0x56_d4, 0xFF__).
@@ -418,6 +431,7 @@ function deobfuscate(src) {
   s = safePass(s, decodeStringEscapes, 'Normalised \\ddd / \\xHH string escapes.', notes);
   s = safePass(s, foldConcat, 'Folded adjacent string concatenation.', notes);
   s = safePass(s, foldTableConcat, 'Folded table.concat of literal arrays.', notes);
+  s = safePass(s, stripNumSeparators, 'Stripped Luau `_` digit separators from numeric literals.', notes);
   s = safePass(s, foldArith, 'Folded integer arithmetic constants.', notes);
   s = safePass(s, foldHexNumbers, 'Converted hexadecimal literals to decimal.', notes);
   s = safePass(s, foldBinNumbers, 'Converted binary literals to decimal.', notes);
@@ -493,6 +507,7 @@ module.exports = {
   foldConcat,
   foldTableConcat,
   foldArith,
+  stripNumSeparators,
   foldHexNumbers,
   foldBinNumbers,
   stripJunk,
