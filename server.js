@@ -559,6 +559,13 @@ app.post('/deobf', async (req, res) => {
     if (result && !result.protected && /^voltils$/i.test(outDetected.name || '')) {
       result = { ...result, partial: true, notes: ['Voltils Obfuscation v7.4 is a compile-to-VM obfuscator (Luraph-family): the real source is compiled into a virtual machine over an encoded constant pool with per-request-randomised indexing, so like Luraph this is best-effort recovery (normalised literals + structure), not byte-exact original source.', ...(result.notes || [])] };
     }
+    // VM-family obfuscators (Pew, Luraph, KarmaVM, Moonveil, Syscure) compile the
+    // source into a bytecode/register VM — the plaintext functions never exist as
+    // Lua, so what recovers is the interpreter + decoded constants, not original
+    // source. Force the partial label so we never over-claim "full" on a VM body.
+    if (result && !result.protected && /^(pew|luraph|karmavm|moonveil|syscure)$/i.test(outDetected.name || '')) {
+      result = { ...result, partial: true };
+    }
     return res.json({ ok: true, detected: outDetected, tool, fetchedFrom, loaderChain, ...result, dump });
   } catch (e) {
     console.error('deobf handler error:', e && e.stack ? e.stack : e);

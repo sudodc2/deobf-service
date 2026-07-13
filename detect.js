@@ -75,6 +75,19 @@ const KNOWN = [
     struct: [/\/obf\/[0-9a-f]{16,}\.lua/i],
   },
   {
+    name: 'Pew',
+    // Pew v1 (ex-Luraph dev). No watermark — it's a control-flow-flattened
+    // register VM emitted as one line: `return(function(<many 2-char params>,...)`
+    // followed by a `while(<var>)do if((<var>)<=(<num>))then …` numeric state
+    // dispatch with deeply nested comparisons and uppercase hex (`0XB`) literals.
+    // Structural-only fingerprint; routed to best-effort recovery (it's a VM).
+    marks: [/\bPew\s+Obfuscator\b/i],
+    struct: [
+      /^return\s*\(\s*function\s*\(\s*(?:[A-Za-z]{2}\s*,\s*){30,}\.\.\.\s*\)/,
+      /while\s*\(\s*\w{2}\s*\)\s*do\s+if\s*\(\s*\(\s*\w{2}\s*\)\s*<=\s*\(\s*\d/,
+    ],
+  },
+  {
     name: 'KarmaProtect',
     marks: [/Protected By Karma Lua Hosting/i, /--\[\[karma:\d+\]\]/, /karma-lua-hosting/i],
     // return(function(...) ... end)(...) shell + the string.char/byte alias
