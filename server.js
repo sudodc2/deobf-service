@@ -12,7 +12,7 @@ const dns = require('node:dns').promises;
 const net = require('node:net');
 const crypto = require('node:crypto');
 
-const { detectObfuscator, looksLikeLuraph } = require('./detect.js');
+const { detectObfuscator, looksLikeLuraph, extractClaimedVersion } = require('./detect.js');
 const ironveil = require('./tools/ironveil/index.js');
 const prometheus = require('./prometheus_deobf.js');
 const karma = require('./karma_deobf.js');
@@ -52,6 +52,26 @@ app.use(express.json({ limit: '6mb' }));
 // secret isn't configured, every non-health request is rejected rather than
 // left open to the world.
 const SHARED = process.env.DEOBF_SHARED_SECRET || '';
+const SOURCE_TTL_SECONDS = Math.max(300, Math.min(86400, parseInt(process.env.DEOBF_SOURCE_TTL_SECONDS || '3600', 10)));
+const SOURCE_DIR = process.env.DEOBF_SOURCE_DIR || path.join(os.tmpdir(), 'deobf-source-links');
+fs.mkdirSync(SOURCE_DIR, { recursive: true });
+
+function sourceSignature(id, expires) {
+  return crypto.createHmac('sha256', SHARED).update(`${id}.${expires}`).digest('hex');
+}
+
+function createSourceLink(source) {
+  if (!SHARED || typeof source !== 'string' || !source) return null;
+  const id = crypto.randomUUID();
+  const expires = Math.floor(Date.now() / 1000) + SOURCE_TTL_SECONDS;
+  fs.writeFileSync(path.join(SOURCE_DIR, `${id}.lua`), source, { mode: 0o600 });
+  const base = String(process.env.RENDER_EXTERNAL_URL || 'https://deobf-service.onrender.com').replace(/\/$/, '');
+  return `${base}/source/${id}?exp=${expires}&sig=${sourceSignature(id, expires)}`;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
 
 function timingSafeEq(a, b) {
   const ab = Buffer.from(String(a));
@@ -61,7 +81,7 @@ function timingSafeEq(a, b) {
 }
 
 app.use((req, res, next) => {
-  if (req.path === '/health') return next();
+  if (req.path === '/health' || req.path.startsWith('/source/')) return next();
   if (!SHARED) {
     console.error('DEOBF_SHARED_SECRET not configured — refusing request');
     return res.status(503).json({ ok: false, error: 'service unavailable' });
@@ -227,6 +247,48 @@ function isThinOutput(out) {
   return thinLen(out) < 40;
 }
 
+function recoveryPercent(payload, originalSource) {
+  if (!payload || payload.ok !== true || payload.protected || payload.failed) return 0;
+  if (payload.loaderOnly) return payload.output ? 15 : 0;
+  if (!payload.output) return 0;
+  const detectedName = payload.detected && payload.detected.name ? String(payload.detected.name) : '';
+  const notes = Array.isArray(payload.notes) ? payload.notes.length : 0;
+  let score = payload.partial ? 35 : (detectedName ? 82 : 48);
+  score += Math.min(12, notes * 2);
+  if (payload.dump) score += 3;
+  if (originalSource && payload.output !== originalSource) score += 5;
+  if (/^(pew|luraph|karmavm|moonveil|syscure|wearedevs)$/i.test(detectedName)) score = Math.min(score, 68);
+  if (!detectedName) score = Math.min(score, 60);
+  return Math.max(0, Math.min(95, score));
+}
+
+function evidenceText(payload) {
+  const det = payload.detected || {};
+  const lines = [
+    'Sudo Deobfuscator evidence report',
+    `Detected family: ${det.name || 'Unknown/generic Lua'}`,
+    `Detection confidence: ${Number.isFinite(det.confidence) ? det.confidence : 0}%`,
+  ];
+  if (det.claimedVersion) lines.push(`Claimed version: ${det.claimedVersion}`);
+  if (det.claimedVersion) lines.push(`Version structurally verified: ${det.versionVerified ? 'yes' : 'no'}`);
+  lines.push(`Recovery estimate: ${Number.isFinite(payload.recoveryPercent) ? payload.recoveryPercent : 0}%`);
+  lines.push(`Tool: ${payload.tool || 'Generic'}`);
+  lines.push(`Partial recovery: ${payload.partial ? 'yes' : 'no'}`);
+  if (payload.fetchedFrom) lines.push(`Fetched from: ${payload.fetchedFrom}`);
+  if (Array.isArray(payload.loaderChain) && payload.loaderChain.length) {
+    lines.push('Loader chain:');
+    payload.loaderChain.forEach((url, index) => lines.push(`  ${index + 1}. ${url}`));
+  }
+  lines.push('', 'Detection signals:');
+  const signals = Array.isArray(det.signals) ? det.signals : [];
+  lines.push(...(signals.length ? signals.map((s) => `- ${s}`) : ['- no strong named-family signal']));
+  lines.push('', 'Transformations and warnings:');
+  const notes = Array.isArray(payload.notes) ? payload.notes : [];
+  lines.push(...(notes.length ? notes.map((n) => `- ${n}`) : ['- none reported']));
+  lines.push('', 'Safety: static analysis and bounded helper tools only; submitted Lua was not directly executed.');
+  return lines.join('\n') + '\n';
+}
+
 // ── per-obfuscator runners ──────────────────────────────────────────────────
 
 function runHercules(src) {
@@ -333,11 +395,47 @@ function runMoonveilStatic(src) {
 // ── main endpoint ────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
+app.get('/source/:id', (req, res) => {
+  const id = String(req.params.id || '');
+  const expires = Number(req.query.exp);
+  const sig = String(req.query.sig || '');
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !Number.isSafeInteger(expires) || expires < Math.floor(Date.now() / 1000)) {
+    return res.status(410).type('text/plain').send('This source link has expired.');
+  }
+  const expected = sourceSignature(id, expires);
+  if (!sig || !timingSafeEq(sig, expected)) return res.status(403).type('text/plain').send('Invalid source link.');
+  const file = path.join(SOURCE_DIR, `${id}.lua`);
+  if (!fs.existsSync(file)) return res.status(410).type('text/plain').send('This source link is no longer available.');
+  const source = fs.readFileSync(file, 'utf8');
+  res.set('Cache-Control', 'private, no-store, max-age=0');
+  return res.type('html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Recovered Lua source</title><style>body{margin:0;background:#0d1117;color:#e6edf3;font:14px ui-monospace,SFMono-Regular,Consolas,monospace}header{position:sticky;top:0;padding:14px 18px;background:#161b22;border-bottom:1px solid #30363d}pre{margin:0;padding:18px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.55}</style></head><body><header>Recovered Lua source · expires ${new Date(expires * 1000).toISOString()}</header><pre>${escapeHtml(source)}</pre></body></html>`);
+});
+
 app.post('/deobf', async (req, res) => {
+  const startedAt = Date.now();
   try {
     let source = typeof req.body.source === 'string' ? req.body.source : '';
     let fetchedFrom = null;
     const forced = req.body.type ? String(req.body.type).toLowerCase() : null;
+    const sendJson = res.json.bind(res);
+    res.json = (payload) => {
+      if (payload && payload.ok === true) {
+        payload.elapsedMs = Date.now() - startedAt;
+        payload.recoveryPercent = recoveryPercent(payload, source);
+        payload.beautified = typeof payload.output === 'string' ? payload.output : '';
+        payload.dump = typeof payload.dump === 'string' ? payload.dump : '';
+        payload.sourceUrl = payload.beautified ? createSourceLink(payload.beautified) : null;
+        if (payload.sourceUrl) payload.notes = [...(Array.isArray(payload.notes) ? payload.notes : []), `View Source: ${payload.sourceUrl}`];
+        payload.files = {
+          source: 'View Source',
+          beautified: 'beautified.lua',
+          dump: 'dump.lua',
+          evidence: 'evidence.txt',
+        };
+        payload.evidence = evidenceText(payload);
+      }
+      return sendJson(payload);
+    };
 
     if (req.body.url) {
       try {
@@ -483,7 +581,14 @@ app.post('/deobf', async (req, res) => {
     // (KarmaVM/WeAreDevs/etc. also use bit32/method-tables) — override weak or
     // already-Luraph/Moonveil guesses, never a high-confidence dedicated match.
     if (luraphScore >= 7 && (detected.confidence < 60 || /^(luraph|moonveil)$/i.test(detected.name || ''))) {
-      detected = { name: 'Luraph', confidence: Math.min(99, luraphScore * 9), signals: [`luraph vm (structural score ${luraphScore})`] };
+      const claimedVersion = extractClaimedVersion(source, 'Luraph');
+      detected = {
+        name: 'Luraph',
+        confidence: Math.min(99, luraphScore * 9),
+        signals: [`luraph vm (structural score ${luraphScore})`, ...(claimedVersion ? [`claimed version ${claimedVersion}`] : [])],
+        claimedVersion,
+        versionVerified: Boolean(claimedVersion && luraphScore >= 7),
+      };
     }
     const which = forced || ((detected.confidence >= 30 ? detected.name : '') || '').toLowerCase();
     let result;

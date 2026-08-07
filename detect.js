@@ -116,9 +116,23 @@ function looksLikeLuraph(src) {
   return score;
 }
 
+function extractClaimedVersion(src, family) {
+  const head = src.slice(0, 16384);
+  const escaped = String(family || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patterns = [
+    new RegExp(`${escaped}(?:\\s+Obfuscator)?\\s*(?:version|ver|v)?\\s*([0-9]+(?:\\.[0-9]+){0,3})`, 'i'),
+    /(?:version|ver)\s*[:=-]?\s*v?([0-9]+(?:\.[0-9]+){0,3})/i,
+  ];
+  for (const re of patterns) {
+    const match = re.exec(head);
+    if (match) return match[1];
+  }
+  return null;
+}
+
 function detectObfuscator(src) {
   const head = src.slice(0, 4096);
-  let best = { name: null, confidence: 0, signals: [] };
+  let best = { name: null, confidence: 0, signals: [], claimedVersion: null, versionVerified: false };
   for (const o of KNOWN) {
     const signals = [];
     let score = 0;
@@ -129,9 +143,14 @@ function detectObfuscator(src) {
     for (const re of o.struct) if (re.test(src)) hits++;
     if (o.struct.length && hits === o.struct.length) { score += 35; signals.push(`structure x${hits}`); }
     else if (hits) { score += 15 * hits; signals.push(`partial x${hits}`); }
-    if (score > best.confidence) best = { name: o.name, confidence: Math.min(99, score), signals };
+    const claimedVersion = extractClaimedVersion(src, o.name);
+    const versionVerified = Boolean(claimedVersion && hits > 0 && signals.includes('watermark'));
+    if (claimedVersion) signals.push(versionVerified ? `version ${claimedVersion} structurally corroborated` : `claimed version ${claimedVersion}`);
+    if (score > best.confidence) {
+      best = { name: o.name, confidence: Math.min(99, score), signals, claimedVersion, versionVerified };
+    }
   }
-  return best.name ? best : { name: null, confidence: 0, signals: [] };
+  return best.name ? best : { name: null, confidence: 0, signals: [], claimedVersion: null, versionVerified: false };
 }
 
-module.exports = { detectObfuscator, looksLikeLuraph };
+module.exports = { KNOWN, detectObfuscator, looksLikeLuraph, extractClaimedVersion };
