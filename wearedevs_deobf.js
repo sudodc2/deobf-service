@@ -296,6 +296,8 @@ function deobfuscate(src) {
       output: devirt.output,
       decodedConstants: uniq,
       devirt: true,
+      sourceRecovered: true,
+      recoveryKind: 'vm-reconstruction',
       functions: devirt.functions,
       blocks: devirt.blocks,
       partial: true,
@@ -322,6 +324,8 @@ function deobfuscate(src) {
   return {
     output: lines.join('\n'),
     decodedConstants: uniq,
+    sourceRecovered: false,
+    recoveryKind: 'constants-and-cfg-only',
     partial: true,
     notes,
   };
