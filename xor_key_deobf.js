@@ -47,8 +47,7 @@ function decodeTableLoop(src, tbl) {
   // capture the KEY literal and the concat var; supports ~, bxor, bit32.bxor, +, -, %
   const name = tbl.name;
   // generic: for ... do  X = X .. string.char(EXPR)  end  where EXPR references name[i] or name[x]
-  const loopRe = new RegExp(
-    'for\\s+[^d]+do\\s*([\\s\\S]{0,260}?)end', 'g');
+  const loopRe = /for\s+[\s\S]{0,80}?do\s*([\s\S]{0,300}?)\bend\b/g;
   let m;
   while ((m = loopRe.exec(src))) {
     const body = m[1];
