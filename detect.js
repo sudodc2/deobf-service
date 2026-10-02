@@ -4,6 +4,7 @@
 const KNOWN = [
   {
     name: 'Hercules',
+    banner: /Obfuscated by Hercules/i,
     marks: [/Obfuscated by Hercules/i, /hercules-obfuscator\.xyz/i],
     struct: [/_ENV\s*\)\s*\(\s*\)/, /getfenv/],
   },
@@ -14,6 +15,7 @@ const KNOWN = [
   },
   {
     name: 'Prometheus',
+    banner: /Prometheus Obfuscator by|This Script is Part of the Prometheus/i,
     marks: [/Prometheus Obfuscator by levno-710/i, /This Script is Part of the Prometheus/i, /__prometheus_/, /_WATERMARK/],
     // ConstantArray rotate/shuffle decoder + WrapInFunction shell — survives
     // variable renaming, so it fingerprints even a "Weak" build.
@@ -34,6 +36,7 @@ const KNOWN = [
   },
   {
     name: 'Kers0ne',
+    banner: /Protected By Kers0ne/i,
     marks: [/Protected By Kers0ne Obfuscator/i, /Base66 Multi-?XOR/i],
     // the base66 pair decoder `(a-1)*66+(b-1)` is unique enough on its own to
     // fingerprint the format even without the header comment.
@@ -141,10 +144,11 @@ const KNOWN = [
   },
   {
     name: 'wYnFuscate',
+    banner: /Protected by wYnFuscate/i,
     // real banner `-- Protected by wYnFuscate: https://wynfuscate.com` + the
     // getfenv bootstrap `return(function(Ja,JB,JW,...)if not Ja then Ja=getfenv`
     marks: [/wynfusc/i, /wYnFuscate/i, /Protected by wYnFuscate/i],
-    struct: [/return\s*\(\s*function\s*\(\s*J\w+\s*,\s*J\w+\s*,\s*J\w+/, /if\s+not\s+\w+\s+then\s+\w+\s*=\s*getfenv/],
+    struct: [/return\s*\(\s*function\s*\(\s*(J\w+\s*,\s*J\w+|\.\.\.)/, /if\s+not\s+\w+\s+then\s+\w+\s*=\s*getfenv|local\s+B\d+\s*=/],
   },
   {
     name: 'MoonVeil v2',
@@ -153,6 +157,7 @@ const KNOWN = [
   },
   {
     name: 'lual.org',
+    banner: /Obfuscated by lual/i,
     // lual.org free web obfuscator — constant-array + a rotating decoder table
     // wrapped in a return(function(...)...end) shell; watermark in header.
     marks: [/lual\.org/i, /Obfuscated by lual/i, /lualorg/i],
@@ -171,6 +176,7 @@ const KNOWN = [
   },
   {
     name: 'IronBrew1',
+    banner: /generated using ironbrew1/i,
     // IronBrew 1 — `generated using ironbrew1` + the signature massive-dummy-param
     // shell return(function(a,a,b,b,b,b,c,d,...) ... end). Older sibling of IB2.
     marks: [/ironbrew\s*1/i, /ironbrew1/i],
@@ -178,6 +184,7 @@ const KNOWN = [
   },
   {
     name: 'IronBrew2',
+    banner: /generated using ironbrew2|ironbrew\\s*2/i,
     marks: [/ironbrew(?!1)/i, /IB2_/i],
     // IronBrew2's real signature: an LZW string decompressor
     // `local function s(d) ... n[l]=i(l) ... local a=256` feeding a register-VM
@@ -189,13 +196,15 @@ const KNOWN = [
   },
   {
     name: 'PSU',
+    banner: /This file was obfuscated using PSU/i,
     marks: [/This file was obfuscated using PSU/i, /PSU\s*Obfuscator/i, /psu\s*\d/i],
     // PSU wraps the whole source in a giant escaped-string constant fed to a
     // char-build loop — the (\d{3}){n} signature + loadstring tail.
-    struct: [/(\\\d{2,3}){30,}/, /loadstring|string\.char/],
+    struct: [/\w\[\s*\({0,2}\s*\d{5,}\s*[-+]\s*#/, /(\\\d{2,3}){30,}|"This file was obfuscated using PSU/],
   },
   {
     name: 'SynapseXen',
+    banner: /Synapse\\s*Xen\\s*v[\\d.]+\\s*by/i,
     // `--[[ Synapse Xen vX by Synapse GP / VM Hash: <sha> ]]` + the signature
     // `SynapseXen_<mixed lI garbage>=select` locals — the camel prefix is unique.
     marks: [/Synapse\s*Xen/i, /SynapseXen_/i],
@@ -203,6 +212,7 @@ const KNOWN = [
   },
   {
     name: 'Boronide',
+    banner: /herrtt'?s?\\s*obfuscator/i,
     // herrtt's obfuscator — `--[[ herrtt's obfuscator, vX ]]` + the
     // `([[herrtts obf, ...]]):gsub('(.*)',function` bootstrap.
     marks: [/herrtt'?s?\s*obf/i, /herrtt/i],
@@ -210,6 +220,7 @@ const KNOWN = [
   },
   {
     name: '77fuscator',
+    banner: /77fuscator\\s*v?[\\d.]+/i,
     // `do local a=[[77fuscator vX ...]];return(function(a)` + numeric
     // `bj=0 while true do if bj>=` control-flow state machine.
     marks: [/77fuscator/i],
@@ -224,6 +235,7 @@ const KNOWN = [
   },
   {
     name: 'LuaObfuscator (Ferib)',
+    banner: /Obfuscated.{0,20}LuaObfuscator/i,
     // Ferib luaobfuscator.com — sequential `local v0=tonumber;local v1=string.byte;
     // local v2=...; vN` numbered aliases bound to builtins (the v0..vN run is
     // distinctive vs IronBrew's single-letter K,N,C,... aliases).
@@ -235,6 +247,7 @@ const KNOWN = [
   },
   {
     name: 'IronBrew3',
+    banner: /ironbrew3:tm:,\\s*v?\\d/i,
     // `--ironbrew3:tm:, vX` + `repeat if not(not(` control-flow + the
     // scrambled multi-char param shell.
     marks: [/ironbrew\s*3/i, /ironbrew3/i, /:tm:,\s*v?\d/i],
@@ -287,6 +300,7 @@ function detectObfuscator(src) {
   for (const o of KNOWN) {
     const signals = [];
     let score = 0;
+    if (o.banner && o.banner.test(head)) { score += 90; signals.push('banner'); }
     for (const re of o.marks) {
       if (re.test(head) || re.test(body)) { score += 60; signals.push('watermark'); break; }
     }
