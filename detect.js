@@ -119,7 +119,7 @@ const KNOWN = [
     // Flurace/ByteProtect/local-byte-array: {"\ddd","\ddd",...} table fed to
     // loadstring / table.concat — string-encryption family shape.
     marks: [/Flurace/i, /ByteProtect/i, /Secure by Flurace/i],
-    struct: [/\{\s*"(?:\\\d{1,3}|\\x[0-9a-fA-F]{2})"/, /table\.concat\s*\(|loadstring\s*\(/],
+    struct: [/\{\s*"(?:\\\d{1,3}|\\x[0-9a-fA-F]{2})"|\{\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}/, /loadstring\s*\(|string\.char\s*\(\s*(?:table\.unpack|\w+\s*\[)/],
   },
   {
     name: 'String-encryption obfuscator',
