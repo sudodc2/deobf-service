@@ -22,6 +22,7 @@ const generic = require('./generic_deobf.js');
 const xorkey = require('./xor_key_deobf.js');
 const strenc = require('./string_enc_deobf.js');
 const vmfam = require('./vm_family_deobf.js');
+const luaparse = require('luaparse');
 
 const ROOT = __dirname;
 const HERCULES = path.join(ROOT, 'tools/hercules/deobfhercules.py');
@@ -248,6 +249,13 @@ function thinLen(out) {
 }
 function isThinOutput(out) {
   return thinLen(out) < 40;
+}
+function isRealRecovery(out) {
+  if (!out) return false;
+  const code = out.replace(/--\[\[[\s\S]*?\]\]|--[^\n]*/g, '').trim();
+  if (!code) return false;
+  if (!/\b(print|local|return|for|while|if|function|do|end|[A-Za-z_]\w*\s*[=(])\b/.test(code)) return false;
+  try { luaparse.parse(code, { luaVersion: '5.1', comments: false }); return true; } catch (_) { return false; }
 }
 
 function recoveryPercent(payload, originalSource) {
@@ -639,7 +647,7 @@ app.post('/deobf', async (req, res) => {
     // diagnostics/comments — e.g. a VM format it can't fully devirtualize, or a
     // misdetection), fall back to generic best-effort so the user always gets
     // as much real recovery as possible instead of an empty/diagnostic dump.
-    if (tool !== 'Generic' && result && !result.protected && isThinOutput(result.output)) {
+    if (tool !== 'Generic' && result && !result.protected && isThinOutput(result.output) && !isRealRecovery(result.output)) {
       try {
         const g = generic.deobfuscate(source);
         const gLen = g && g.output ? g.output.trim().length : 0;
