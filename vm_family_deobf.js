@@ -92,8 +92,22 @@ function encodedBlob(src) {
 }
 
 function apiSurface(strings) {
-  const api = strings.filter((s) => /^(getfenv|setfenv|loadstring|load|pcall|xpcall|coroutine|task|string|table|math|bit32|buffer|debug|game|workspace|identifyexecutor|getexecutor|isfunctionhooked|restorefunction|hookfunction|getrenv|getgenv|GetJobsInfo|GetService|HttpGet|require|rawget|rawset|setmetatable|getmetatable|newcclosure|checkcaller|getidentity|setidentity|tick|os\.time|wait|spawn)/i.test(s) || /^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(s));
-  return api;
+  const api = new Set(strings.filter((s) => /^(getfenv|setfenv|loadstring|load|pcall|xpcall|coroutine|task|string|table|math|bit32|buffer|debug|game|workspace|identifyexecutor|getexecutor|isfunctionhooked|restorefunction|hookfunction|getrenv|getgenv|GetJobsInfo|GetService|HttpGet|require|rawget|rawset|setmetatable|getmetatable|newcclosure|checkcaller|getidentity|setidentity|tick|os\.time|wait|spawn)/i.test(s) || /^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(s)));
+  // Also surface method-name constants as the library they belong to — a VM's
+  // constant pool lists 'bnot','bor','band' not 'bit32.x', but they imply bit32.
+  const methodLibs = [
+    [/^(bnot|bor|bxor|band|lshift|rshift|arshift|rol|ror|btest|extract|replace|countlz|countrz|byteswap)$/, 'bit32'],
+    [/^(byte|char|sub|len|find|match|gmatch|gsub|format|rep|upper|lower|reverse|pack|unpack|packsize|split)$/, 'string'],
+    [/^(insert|concat|remove|pack|unpack|move|create|sort|foreach|foreachi|getn|setn|find|clear|clone|freeze|isfrozen|maxn)$/, 'table'],
+    [/^(floor|ceil|abs|max|min|sqrt|exp|log|pow|huge|pi|fmod|modf|random|randomseed|clamp|round|sign|noise|map|lerp|acos|asin|atan|cos|sin|tan|deg|rad)$/, 'math'],
+    [/^(create|fromstring|fromhex|tostring|readi8|readu8|readi16|readu16|readi32|readu32|readf32|readf64|writei8|writeu8|writei16|writeu16|writei32|writeu32|writef32|writef64|len|fill|copy|slice)$/, 'buffer'],
+    [/^(GetService|GetJobsInfo|FireServer|InvokeServer|Connect|Wait|Clone|FindFirstChild|FindFirstChildOfClass|GetChildren|GetDescendants|Destroy|TweenPosition|new|Raycast|SetCore|GetPlayers)$/, 'roblox/game'],
+  ];
+  for (const s of strings) {
+    const clean = String(s).replace(/^"|"$/g, '');
+    for (const [re, lib] of methodLibs) if (re.test(clean)) api.add(lib);
+  }
+  return [...api];
 }
 
 // Recover the opcode-handler dispatch — interpreter functions the VM calls
