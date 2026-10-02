@@ -577,13 +577,14 @@ app.post('/deobf', async (req, res) => {
     const kersoneScore = kersone.looksLikeKersone(source);
     const wearedevsScore = wearedevs.looksLikeWeAreDevs(source);
     let detected = detectObfuscator(source);
+    const priorCandidates = detected.candidates || [];
     if (kersoneScore >= 6 && kersoneScore >= detected.confidence / 15) {
-      detected = { name: 'Kers0ne', confidence: Math.min(99, kersoneScore * 15), signals: [`base66 multi-xor (score ${kersoneScore})`] };
+      detected = { name: 'Kers0ne', confidence: Math.min(99, kersoneScore * 15), signals: [`base66 multi-xor (score ${kersoneScore})`], candidates: priorCandidates };
     }
     // WeAreDevs is a self-contained string-pool decoder + register VM; give it a
     // dedicated high-confidence route ahead of the generic detector.
     if (wearedevsScore >= 8) {
-      detected = { name: 'WeAreDevs', confidence: Math.min(99, wearedevsScore * 9), signals: [`wearedevs vm (score ${wearedevsScore})`] };
+      detected = { name: 'WeAreDevs', confidence: Math.min(99, wearedevsScore * 9), signals: [`wearedevs vm (score ${wearedevsScore})`], candidates: priorCandidates };
     }
     // Luraph structural fingerprint — catches watermark-stripped builds (e.g.
     // onyxv2's ASCII banner) that the comment-based detector would miss/mislabel.
@@ -599,6 +600,7 @@ app.post('/deobf', async (req, res) => {
         signals: [`luraph vm (structural score ${luraphScore})`, ...(claimedVersion ? [`claimed version ${claimedVersion}`] : [])],
         claimedVersion,
         versionVerified: Boolean(claimedVersion && luraphScore >= 7),
+        candidates: priorCandidates,
       };
     }
     const which = forced || ((detected.confidence >= 30 ? detected.name : '') || '').toLowerCase();
