@@ -14,6 +14,14 @@ const KNOWN = [
     struct: [/return\(function\(\.\.\.\)return\(function\(\.\.\.\)/],
   },
   {
+    name: 'WeAreDevs',
+    banner: /wearedevs\.net\/obfuscator/i,
+    // WeAreDevs is Prometheus under the hood — --[[ vX https://wearedevs.net/obfuscator ]]
+    // banner + local a={"\ddd";"\ddd";...} escaped-string const table.
+    marks: [/wearedevs/i, /wearedevs\.net/i],
+    struct: [/local\s+\w+\s*=\s*\{\s*"\\\d{2,3}/, /(\\\d{2,3}){20,}/],
+  },
+  {
     name: 'Prometheus',
     banner: /Prometheus Obfuscator by|This Script is Part of the Prometheus/i,
     marks: [/Prometheus Obfuscator by levno-710/i, /This Script is Part of the Prometheus/i, /__prometheus_/, /_WATERMARK/],
