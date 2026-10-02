@@ -263,3 +263,25 @@ preamble/early decode structure.
   dispatch + encoded stream + API surface and mark `partial`; literal source
   needs a per-engine deserializer port (multi-week each, same class as the
   Soteria break).
+
+
+## Bytecode-blob encodings located in the field (deeper devirt frontier)
+
+- **Luraph v13 `LPH#` stream:** custom nibble alphabet `{0-9, A-F, H}` — not
+  standard base; `H` is a structural token (separator/marker), not a hex digit.
+  The blob is the per-version serialized instruction+constant stream; decoding
+  needs the matching Luraph deserializer (the `LPH#` magic alone locates it —
+  recover offset+length, then port that version's decode routine). Cross-version
+  check: v10-v13 all emit `LPH#`-prefixed streams; the version string in the
+  `-- generated using Luraph Obfuscator vX.Y.Z` banner selects the decoder.
+
+- **Opcode-dispatch shapes that label the ISA:** named-handler tables
+  (`local X=function` / `[,{}]X=function`) vs `if/elseif op==N` state machines.
+  Tagging each branch's builtin calls (arith/compare/loop/env/string/table)
+  reconstructs the VM's opcode semantics without a full deserializer — the
+  implemented `handlerSemantics`/`dispatchBranches` approach.
+
+- **Method-name constants map to libraries** even when the VM only stores bare
+  names: `bnot/bor/bxor/band/lshift/rshift`→bit32, `byte/char/sub/gsub`→string,
+  `insert/concat/unpack`→table, `readi8/writef32/fromhex`→buffer,
+  `GetService/FireServer/Connect`→roblox. Recovers the payload's API surface.
