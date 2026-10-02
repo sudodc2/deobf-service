@@ -154,7 +154,7 @@ const KNOWN = [
     // the const-array + literal-index-read shape is lual-specific when the
     // source is *mostly* the decoder table — require a real indexed read, not
     // any `t[i]` (IronBrew/LZW fill loops were stealing this).
-    struct: [/local\s+\w+\s*=\s*\{\s*\d+\s*,\s*\d+/, /\w+\s*\[\s*\w+\s*[+\-]\s*\d+\s*\]/],
+    struct: [/local\s+\w+\s*=\s*\{\s*\d+\s*,\s*\d+/, /local\s+\w+\s*=\s*\w+\s*\[\s*\w+\s*[+\-]\s*\d+\s*\]/],
   },
   {
     name: 'Env-keyed/sealed',
