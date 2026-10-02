@@ -139,6 +139,21 @@ const KNOWN = [
     struct: [/function\s+\w+\([\w,]{3,20}\)/, /\w+\[\d{4,5}\]/],
   },
   {
+    name: 'lual.org',
+    // lual.org free web obfuscator — constant-array + a rotating decoder table
+    // wrapped in a return(function(...)...end) shell; watermark in header.
+    marks: [/lual\.org/i, /Obfuscated by lual/i, /lualorg/i],
+    struct: [/local\s+\w+\s*=\s*\{\s*\d+\s*,/, /\w+\s*\[\s*\w+\s*\+\s*\d+\s*\]/],
+  },
+  {
+    name: 'Env-keyed/sealed',
+    // fake-executor / env-keyed string seal: strings are keyed off a runtime
+    // value (executor name, HWID, env var) so they only decode under the real
+    // environment — we recover the decode fn + keyed constants, marked partial.
+    marks: [/syn\b/i, /KRNL|Fluxus|Volt|executor/i],
+    struct: [/getgenv|getrenv|identifyexecutor|getexecutorname/, /string\.char|bit32\.bxor/],
+  },
+  {
     name: 'IronBrew2',
     marks: [/ironbrew/i, /IB2_/i],
     // IronBrew2 ships a compact register-VM: numeric opcode table + a
