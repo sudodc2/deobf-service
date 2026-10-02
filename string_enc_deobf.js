@@ -101,6 +101,12 @@ function extractLoadstringPayload(src) {
       const dec = unescapeLua(lv[2].slice(1, -1));
       if (dec.length > 8) return dec;
     }
+    // `local V="..." loadstring(table.concat(V))` — decoded string re-concat'd then loaded
+    const lc = /local\s+(\w+)\s*=\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')[\s\S]{0,200}?\b(?:loadstring|load)\s*\(\s*table\.concat\s*\(\s*\1/g.exec(src);
+    if (lc) {
+      const dec = unescapeLua(lc[2].slice(1, -1));
+      if (dec.length > 8) return dec;
+    }
     return null;
   }
   const dec = unescapeLua(m[1].slice(1, -1));
@@ -127,6 +133,21 @@ function deobfuscate(source) {
   // Pass 2: function-thunk decode tables  T[i]() -> plaintext.
   const th = resolveThunkTable(out);
   if (th.count) { out = th.out; recovered++; notes.push(`Resolved ${th.count} string-decode thunk table(s) to plaintext literals.`); }
+
+  // Pass 2b: byte-table `local T={"a","b",...}` folded through table.concat /
+  // loadstring(table.concat(T)) — Flurace/ByteProtect shape. The concatenated
+  // elements are the encoded source string itself.
+  out = out.replace(
+    /local\s+(\w+)\s*=\s*\{((?:\s*"(?:\\.|[^"\\])*"\s*,?)+)\}([\s\S]{0,400}?)\btable\.concat\s*\(\s*\1/g,
+    (w, name, body, _rest) => {
+      const lits = [...body.matchAll(/"(?:\\.|[^"\\])*"/g)].map((m) => m[0].slice(1, -1));
+      if (lits.length < 4) return w;
+      const joined = lits.map(unescapeLua).join('');
+      if (printableRatio(joined) < 0.6) return w;
+      const replaced = w.replace(name, JSON.stringify(joined));
+      return replaced === w ? w : w.replace(`{${body}}`, JSON.stringify(joined));
+    }
+  );
 
   // Pass 3: inline string.char(n,n,...) calls.
   const beforeChar = out;
