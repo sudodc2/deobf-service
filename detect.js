@@ -305,6 +305,7 @@ function detectObfuscator(src) {
   const SCAN_MAX = 256 * 1024;
   const body = src.length > SCAN_MAX ? src.slice(0, SCAN_MAX) : src;
   let best = { name: null, confidence: 0, signals: [], claimedVersion: null, versionVerified: false };
+  const candidates = [];
   for (const o of KNOWN) {
     const signals = [];
     let score = 0;
@@ -319,11 +320,14 @@ function detectObfuscator(src) {
     const claimedVersion = extractClaimedVersion(src, o.name);
     const versionVerified = Boolean(claimedVersion && hits > 0 && signals.includes('watermark'));
     if (claimedVersion) signals.push(versionVerified ? `version ${claimedVersion} structurally corroborated` : `claimed version ${claimedVersion}`);
+    if (score >= 30) candidates.push({ name: o.name, confidence: Math.min(99, score) });
     if (score > best.confidence) {
       best = { name: o.name, confidence: Math.min(99, score), signals, claimedVersion, versionVerified };
     }
   }
-  return best.name ? best : { name: null, confidence: 0, signals: [], claimedVersion: null, versionVerified: false };
+  candidates.sort((a, b) => b.confidence - a.confidence);
+  best.candidates = candidates.filter((c) => c.name !== best.name);
+  return best.name ? best : { name: null, confidence: 0, signals: [], claimedVersion: null, versionVerified: false, candidates: [] };
 }
 
 module.exports = { KNOWN, detectObfuscator, looksLikeLuraph, extractClaimedVersion };
