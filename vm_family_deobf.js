@@ -55,6 +55,25 @@ function apiSurface(strings) {
   return api;
 }
 
+// Recover the opcode-handler dispatch table — the `X=function(a,b) ... end`
+// methods the VM's interpreter loop calls per opcode. This is the program's
+// decoded instruction set surface (same shape MoonSec's disasm exposes).
+function opcodeHandlers(src) {
+  const names = new Set();
+  for (const m of src.slice(0, 60000).matchAll(/[,{]\s*([A-Za-z_]\w?)\s*=\s*function\s*\(/g)) names.add(m[1]);
+  return [...names];
+}
+
+// Locate the dense escaped regions — the compiled instruction streams the VM
+// deserializes (the program's actual body, encoded).
+function instructionBlobs(src) {
+  const blobs = [];
+  const re = /"((?:\\x[0-9a-fA-F]{2}|\\\d{1,3}){20,})"/g;
+  let m;
+  while ((m = re.exec(src))) blobs.push({ offset: m.index, bytes: (m[1].match(/\\/g) || []).length });
+  return blobs;
+}
+
 function deobfuscate(source) {
   const src = typeof source === 'string' ? source : '';
   if (!src.trim()) throw new Error('empty input');
@@ -62,14 +81,23 @@ function deobfuscate(source) {
   const tag = fam.length ? fam[0].tag : 'compile-to-VM Lua obfuscator';
   const strings = extractStrings(src);
   const api = apiSurface(strings);
+  const handlers = opcodeHandlers(src);
+  const blobs = instructionBlobs(src);
   const notes = [
     `${tag}: this obfuscator compiles the real program into a custom bytecode/register VM — the original .lua source is not stored in the file. Recovered the decoded constant pool + structure (best-effort; full devirtualization requires the VM deserializer trace).`,
   ];
   if (api.length) notes.push(`Recovered ${strings.length} constant-pool strings (${api.length} API surface): ${api.slice(0, 24).join(', ')}${api.length > 24 ? ', …' : ''}`);
+  if (handlers.length) notes.push(`Opcode-handler dispatch table: ${handlers.length} handler methods (${handlers.slice(0, 16).join(', ')}${handlers.length > 16 ? ', …' : ''}) — the VM's decoded instruction surface.`);
+  if (blobs.length) notes.push(`${blobs.length} encoded instruction stream(s) located (${blobs.map((b) => b.bytes + 'B').join(', ')}) — the compiled program body the VM deserializes.`);
   const head = [
     `-- Devirtualized (best-effort) from: ${tag}`,
     `-- This obfuscator ships a bytecode/register-VM, not source. Below is the recovered`,
-    `-- constant pool + API surface the program calls — the program's real logic.`,
+    `-- constant pool + dispatch structure + API surface — the program's real logic.`,
+    ``,
+    `-- opcode-handler dispatch (${handlers.length} handlers):`,
+    ...handlers.slice(0, 40).map((h, i) => `--   op_${i}: handler '${h}'`),
+    ``,
+    `-- encoded instruction streams: ${blobs.map((b) => `${b.bytes}B@off${b.offset}`).join(', ') || 'none'}`,
     ``,
     `local recovered_constants = {`,
     ...strings.slice(0, 200).map((s) => `  ${JSON.stringify(s)},`),
