@@ -15,7 +15,7 @@ const fixtures = {
   Voltils: '-- Voltils Obfuscation v7.4 dsc.gg/Voltils\nlocal __voltils_abc=1',
   Syscure: '-- syscure.vip\nloadstring(game:HttpGet("https://syscure.vip/obf/0123456789abcdef.lua"))()',
   Pew: '-- Pew Obfuscator v1\nlocal x=string.char(104,105)',
-  KarmaProtect: '-- Protected By Karma Lua Hosting\nlocal a=string.char;local b=string.byte;return(function(...)end)',};',
+  KarmaProtect: '-- Protected By Karma Lua Hosting\nlocal a=string.char;local b=string.byte;return(function(...)end)',
   'Lua XOR-key string obf': 'local b={97,98,99,100,101,102,103,104,105,106,107,108} local s="" for i=1,#b do s=s..string.char(b[i]^7) end',
   Soteria: '-- SOTR\\x01 protected\nreturn({A=function(...)end}) local q=bit32.bor(1,2)',
   Centurion: '-- Centurion\nreturn({A=function(...)end})',

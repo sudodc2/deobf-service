@@ -127,6 +127,20 @@ const KNOWN = [
     marks: [/moonveil/i, /mv2_/i],
     struct: [/function\s+\w+\([\w,]{3,20}\)/, /\w+\[\d{4,5}\]/],
   },
+  {
+    name: 'IronBrew2',
+    marks: [/ironbrew/i, /IB2_/i],
+    // IronBrew2 ships a compact register-VM: numeric opcode table + a
+    // constant-pool it indexes by scrambled key, with a return(...)() shell.
+    struct: [/return\s*\(\s*function/, /(\w+\s*=\s*\{\s*\d+\s*,){2,}/, /bit32\.|\bbor\b|\bbxor\b/],
+  },
+  {
+    name: 'PSU',
+    marks: [/This file was obfuscated using PSU/i, /PSU\s*Obfuscator/i, /psu\s*\d/i],
+    // PSU wraps the whole source in a giant escaped-string constant fed to a
+    // char-build loop — the (\d{3}){n} signature + loadstring tail.
+    struct: [/(\\\d{2,3}){30,}/, /loadstring|string\.char/],
+  },
 ];
 
 // Structural Luraph fingerprint (survives watermark removal — e.g. onyxv2 which
