@@ -285,3 +285,25 @@ preamble/early decode structure.
   names: `bnot/bor/bxor/band/lshift/rshift`→bit32, `byte/char/sub/gsub`→string,
   `insert/concat/unpack`→table, `readi8/writef32/fromhex`→buffer,
   `GetService/FireServer/Connect`→roblox. Recovers the payload's API surface.
+
+
+## Dynamic-devirt harness results (Lune, real obfuscated samples)
+
+Confirmed the dynamic-dump path boots these VMs in a Luau harness
+(`@lune/luau` `luau.load(src,{environment=env})` with a polymorphic-stub env):
+
+- **Luraph v13:** the outer shell + inner VM boot; the interpreter executes to
+  `internal:3` then `call a nil value` — the VM's *data-driven* deserializer
+  resolves a register that is nil. Globals are NOT the blocker (a polymorphic
+  self-referential stub — callable+indexable, never nil — satisfies every
+  global; the only literal global touched is `wait`). The wall is the `LPH#`
+  stream's own deserialize producing a nil register — a field-desync INSIDE the
+  VM identical in class to Soteria's `om`/`Fu` off-by-nibble. Devirt path:
+  port that version's deserializer (the `LPH#` nibble decode + its register
+  layout), not env-stubbing.
+
+- General rule confirmed across the corpus: **env-stubbing unblocks only the
+  outer shell**; the inner register-VM deserializer always needs the real
+  decoded values, so full devirt = replicate the per-version byte-decode, which
+  is the multi-week per-engine effort. Constant-pool + dispatch-shape +
+  LPH#-blob extraction (what `vm_family` does) is the tractable recovery.
