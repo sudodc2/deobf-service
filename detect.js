@@ -105,7 +105,7 @@ const KNOWN = [
     struct: [
       /\{\s*\d{1,3}\s*(,\s*\d{1,3}\s*){4,}\}/,
       // string.char(t[i]) OR an aliased char fn x(t[i]) fed through a concat loop
-      /(?:string\.char|\w+)\s*\(\s*\w+\s*\[\s*\w+\s*\]\s*\)|(?:bit32\.)?bxor\s*\(\s*\w+\s*\[|\w+\s*\[\s*\w+\s*\]\s*~/,
+      /(?:string\.char|\w+)\s*\([^()]*?\w+\s*\[\s*\w+\s*\]|(?:bit32\.)?bxor\s*\([^)]*?\w+\s*\[|\w+\s*\[\s*\w+\s*\]\s*~/,
     ],
   },
   {
