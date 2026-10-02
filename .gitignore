@@ -5,3 +5,4 @@ tools/unluac.jar
 *.log
 .DS_Store
 __pycache__/
+.test-source-links/

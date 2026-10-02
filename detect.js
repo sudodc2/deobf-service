@@ -110,7 +110,13 @@ const KNOWN = [
   {
     name: 'String-encryption obfuscator',
     marks: [/ferib/i, /goofyscat/i, /wynfusc/i, /lua.?obfuscator/i],
-    struct: [/local\s+\w+\s*=\s*\{\s*function\s*\([^)]*\)\s*return/, /\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}/],
+    // thunk-table `{function()return"s"end,...}` OR a dense \xHH/\ddd escaped
+    // blob + a decode call — either alone fingerprints this family.
+    struct: [
+      /local\s+\w+\s*=\s*\{\s*function\s*\([^)]*\)\s*return/,
+      /\w+\s*\[\s*\d+\s*\]\s*\(\s*\)/,
+      /(\\x[0-9a-fA-F]{2}|\\\d{1,3}){6,}/,
+    ],
   },
   {
     name: 'Soteria',
