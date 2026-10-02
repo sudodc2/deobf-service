@@ -88,6 +88,26 @@ function decodeByteBlobs(src) {
   return src;
 }
 
+
+// If `out` is essentially `... loadstring(S) ...` / `load(S)` with S a decoded
+// string literal holding the real source, return that source. Handles nested
+// `return(function(...) ... loadstring("...")() end)()` PSU-style shells.
+function extractLoadstringPayload(src) {
+  const m = /(?:loadstring|load)\s*\(\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/.exec(src);
+  if (!m) {
+    // `local V="..." loadstring(V)` — the decoded source bound to a var then loaded
+    const lv = /local\s+(\w+)\s*=\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')[\s\S]{0,200}?\b(?:loadstring|load)\s*\(\s*\1\s*\)/.exec(src);
+    if (lv) {
+      const dec = unescapeLua(lv[2].slice(1, -1));
+      if (dec.length > 8) return dec;
+    }
+    return null;
+  }
+  const dec = unescapeLua(m[1].slice(1, -1));
+  if (dec.length > 10 && /function|local|return|for|print|\w+\s*=[^=]/.test(dec)) return dec;
+  return null;
+}
+
 function deobfuscate(source) {
   const src = typeof source === 'string' ? source : '';
   const notes = [];
@@ -117,6 +137,15 @@ function deobfuscate(source) {
     return printableRatio(s) >= 0.7 ? JSON.stringify(s) : w;
   });
   if (out !== beforeChar) { recovered++; notes.push('Decoded string.char byte sequences.'); }
+
+  // If the decoded program is still just a loader wrapping the real source in a
+  // string + loadstring/eval, surface the payload itself (the actual recovery).
+  const payload = extractLoadstringPayload(out);
+  if (payload) {
+    out = payload;
+    recovered++;
+    notes.push('Pulled the recovered source out of the obfuscator\'s loadstring wrapper.');
+  }
 
   if (recovered === 0) throw new Error('no string-encryption pattern matched');
   try { luaparse.parse(out, { luaVersion: '5.1', comments: false }); } catch (_) {}
