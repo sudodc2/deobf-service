@@ -165,8 +165,15 @@ const KNOWN = [
     struct: [/getgenv|getrenv|identifyexecutor|getexecutorname/, /string\.char|bit32\.bxor/],
   },
   {
+    name: 'IronBrew1',
+    // IronBrew 1 — `generated using ironbrew1` + the signature massive-dummy-param
+    // shell return(function(a,a,b,b,b,b,c,d,...) ... end). Older sibling of IB2.
+    marks: [/ironbrew\s*1/i, /ironbrew1/i],
+    struct: [/return\s*\(\s*function\s*\(\s*[a-z]\s*,\s*[a-z]\s*,\s*[a-z]\s*,\s*[a-z]\s*,\s*[a-z]\s*,\s*[a-z]\s*,/, /\(\s*a\s*,\s*a\s*,\s*b\s*,\s*b\s*,\s*b\s*,\s*b\s*,/],
+  },
+  {
     name: 'IronBrew2',
-    marks: [/ironbrew/i, /IB2_/i],
+    marks: [/ironbrew(?!1)/i, /IB2_/i],
     // IronBrew2's real signature: an LZW string decompressor
     // `local function s(d) ... n[l]=i(l) ... local a=256` feeding a register-VM
     // closure `local function h(l,e,a)` that re-enters `h(i(),{},H())`.
