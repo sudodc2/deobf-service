@@ -643,7 +643,8 @@ app.post('/deobf', async (req, res) => {
       else if (which.includes('karma') && !which.includes('karmavm')) result = karma.deobfuscate(source);
       // VM-family engines (constant-pool / register-VM): best-effort recovery.
       else if (which.includes('luraph') || which.includes('synapsexen') || which.includes('boronide')
-               || which.includes('77fuscator') || which.includes('lps') || which.includes('ironbrew')) result = vmfam.deobfuscate(source);
+               || which.includes('77fuscator') || which.includes('lps') || which.includes('ironbrew')
+               || which.includes('lua obscura') || which.includes('lualock') || which.includes('aztupbrew')) result = vmfam.deobfuscate(source);
       else {
         // No named format matched — attempt best-effort generic recovery on ANY
         // input instead of giving up.

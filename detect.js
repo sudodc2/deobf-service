@@ -261,6 +261,23 @@ const KNOWN = [
     marks: [/ironbrew\s*3/i, /ironbrew3/i, /:tm:,\s*v?\d/i],
     struct: [/repeat\s+if\s+not\s*\(\s*not\s*\(/, /return\s*\(\s*function\s*\(\s*\w+\s*,\s*\w+\s*,\s*\w+\s*,\s*\w+\s*,\s*\w+\s*,\s*\w+/],
   },
+  {
+    name: 'Lua Obscura',
+    marks: [/luaobscura/i, /\bObscura\b/i, /\bVega\b.{0,20}Atlas|\bAtlas\b.{0,20}Vega/i],
+    struct: [/protected virtual machine|devirtualization/i, /seed\s*=|loadstring\s*-?free|ModuleScript/i],
+  },
+
+  {
+    name: 'LuaLock',
+    marks: [/LuaLock/i, /lualock\.dev/i, /affine byte permutation/i],
+    struct: [/opcode|register-?based bytecode|encrypted constant/i, /tamper-?detection|anti-?introspection|loadstring/i],
+  },
+  {
+    name: 'AztupBrew',
+    marks: [/AztupBrew|Aztup/i, /\bw0y\b|Sweetie|sweetie/i, /protectme|Protected\s*Watermark/i],
+    struct: [/GetFenv|SetFenv|HookFunction|hookfunction/i, /instr|stacks|locals|mem_from_top/i],
+  },
+
 ];
 
 // Structural Luraph fingerprint (survives watermark removal — e.g. onyxv2 which
