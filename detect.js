@@ -27,7 +27,7 @@ const KNOWN = [
   {
     name: 'Moonveil',
     marks: [/moonveil/i],
-    struct: [/function\s+\w+\([\w,]{3,20}\)/, /\w+\[\d{4,5}\]/],
+    struct: [/function\s+\w+\([\w,]{3,20}\)/, /\[\d{4,5}\]/],
   },
   {
     name: 'Kers0ne',
@@ -122,7 +122,7 @@ const KNOWN = [
     // blob + a decode call — either alone fingerprints this family.
     struct: [
       /local\s+\w+\s*=\s*\{\s*function\s*\([^)]*\)\s*return/,
-      /\w+\s*\[\s*\d+\s*\]\s*\(\s*\)/,
+      /\[\s*\d+\s*\]\s*\(\s*\)/,
       /(\\x[0-9a-fA-F]{2}|\\\d{1,3}){6,}/,
     ],
   },
@@ -144,7 +144,7 @@ const KNOWN = [
   {
     name: 'MoonVeil v2',
     marks: [/moonveil/i, /mv2_/i],
-    struct: [/function\s+\w+\([\w,]{3,20}\)/, /\w+\[\d{4,5}\]/],
+    struct: [/function\s+\w+\([\w,]{3,20}\)/, /\[\d{4,5}\]/],
   },
   {
     name: 'lual.org',
@@ -177,7 +177,7 @@ const KNOWN = [
     // IronBrew2's real signature: an LZW string decompressor
     // `local function s(d) ... n[l]=i(l) ... local a=256` feeding a register-VM
     // closure `local function h(l,e,a)` that re-enters `h(i(),{},H())`.
-    struct: [/local\s+function\s+\w+\s*\(\s*\w+\s*\)\s*local\s+\w+\s*,\w+\s*,\w+\s*=/, /\w+\[\s*\w+\s*\]\s*=\s*\w+\s*\(\s*\w+\s*\)/, /local\s+\w+\s*=\s*256/, /local\s+function\s+\w+\s*\(\s*\w+\s*,\s*\w+\s*,\s*\w+\s*\)/],
+    struct: [/local\s+function\s+\w+\s*\(\s*\w+\s*\)\s*local\s+\w+\s*,\w+\s*,\w+\s*=/, /\[\s*\w+\s*\]\s*=\s*\w+\s*\(\s*\w+\s*\)/, /local\s+\w+\s*=\s*256/, /local\s+function\s+\w+\s*\(\s*\w+\s*,\s*\w+\s*,\s*\w+\s*\)/],
   },
   {
     name: 'PSU',
