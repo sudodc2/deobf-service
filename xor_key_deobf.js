@@ -7,12 +7,14 @@
 // transform is pure arithmetic on literals, we can replay it statically and
 // recover the plaintext source — no VM, no execution, no environment.
 //
+// Lua operators: `~` is bitwise XOR (Lua 5.3+/Luau); `^` is EXPONENTIATION, not
+// XOR — never treat a^b as a xor decode. `bit32.bxor`/`bxor` are real XOR calls.
+//
 // Shapes handled:
 //   local t={103,104,105}; local s="" for i=1,#t do s=s..string.char(bit32.bxor(t[i],42)) end
 //   local t={...}; for i,x in ipairs(t) do s=s..string.char(x~k) end   (Luau ~ xor)
-//   string.char(65^9,66^9,...)                                        (inline xor)
-//   string.char((n-1)*?, ...) / (b%256) byte-array concat             (plain arrays)
-//   local b={98,121,116,101}; loadstring(string.char(unpack? b))      (byte-array wrap)
+//   string.char(bit32.bxor(65,9),66~9,...)                            (inline xor calls)
+//   local b={98,121,116,101}; loadstring(string.char(unpack(b)))      (byte-array wrap)
 
 const luaparse = require('luaparse');
 
@@ -21,7 +23,7 @@ function looksLikeXorKey(src) {
   const head = src.slice(0, 8192);
   // numeric byte-array table + a char/bxor rebuild loop is the signature.
   if (/\{\s*\d{1,3}\s*(,\s*\d{1,3}\s*){7,}\}/.test(src)) score += 2;
-  if (/string\.char\s*\(\s*(?:bit32\.)?b?xor|bxor\s*\(\s*\w+\s*\[|\.char\s*\([^)]*\^/.test(src)) score += 2;
+  if (/string\.char\s*\(\s*(?:bit32\.)?bxor|bxor\s*\(\s*\w+\s*\[|\.char\s*\([^)]*~/.test(src)) score += 2;
   if (/(\\x[0-9a-fA-F]{2}){8,}/.test(head) && /string\.char|loadstring/.test(src)) score += 1;
   if (/for\s+\w+\s*=\s*1\s*,\s*#\w+\s*do\s*[\s\S]{0,200}?string\.char/.test(src)) score += 2;
   return score;
@@ -41,28 +43,22 @@ function* numericTables(src) {
   }
 }
 
-// Find the decode loop for a table and replay it. Returns decoded string or null.
+// Find the decode loop for a table and replay it. Returns {decoded, printable,
+// loopSpan, resultVar} or null. loopSpan covers the whole `for ... end`
+// statement so the caller can drop the (now-dead) indexing loop entirely.
 function decodeTableLoop(src, tbl) {
-  // pattern A:  s = s .. string.char(bit32.bxor(t[i], KEY))   inside a for over t
-  // capture the KEY literal and the concat var; supports ~, bxor, bit32.bxor, +, -, %
   const name = tbl.name;
-  // generic: for ... do  X = X .. string.char(EXPR)  end  where EXPR references name[i] or name[x]
-  const loopRe = /for\s+[\s\S]{0,80}?do\s*([\s\S]{0,300}?)\bend\b/g;
+  const loopRe = /for\s+[\s\S]{0,80}?\bdo\b\s*([\s\S]{0,300}?)\bend\b/g;
   let m;
   while ((m = loopRe.exec(src))) {
     const body = m[1];
     if (!body.includes(name)) continue;
-    // EXPR forms inside string.char(...)
     const cm = /string\.char\s*\(([^)]*)\)/.exec(body);
     if (!cm) continue;
     const expr = cm[1];
-    // deduce the transform applied to each element. Try candidates on first bytes.
-    // candidate transforms keyed by discovered literal constants.
-    const keyMatch = /(\d{1,3})\s*(?:\)|,|\s*end|\s*$)/.exec(expr);
-    // forms:
-    //   bit32.bxor(name[i], K) / name[i] ~ K  / name[i] ^ K
+    // transforms: bit32.bxor(name[i],K) / name[i] ~ K  (NEVER ^ — that's pow)
     let dec = null;
-    const xorK = /(?:bxor|~|\^)\s*\(?\s*[^,()]*?(\d{1,3})\s*\)?\s*$/.exec(expr);
+    const xorK = /(?:bxor|~)\s*\(?\s*[^,()]*?(\d{1,3})\s*\)?\s*$/.exec(expr);
     const subK = /-\s*(\d{1,3})\s*(?:%|$|\))/.exec(expr);
     const addK = /\+\s*(\d{1,3})\s*(?:%|$|\))/.exec(expr);
     const modM = /%\s*(\d{1,3})/.exec(expr);
@@ -82,7 +78,15 @@ function decodeTableLoop(src, tbl) {
       dec = tbl.nums;
     }
     if (dec && dec.length) {
-      return { decoded: dec.map((b) => (b >= 32 && b < 127) || b === 9 || b === 10 || b === 13 ? String.fromCharCode(b) : `\\${b}`).join(''), printable: printableRatio(dec) };
+      // result var = the concat accumulator `X = X .. string.char(...)`
+      const rv = /(\w+)\s*=\s*\1?\s*\.\./.exec(body) || /(\w+)\s*=\s*string\.char/.exec(body);
+      const resultVar = rv ? rv[1] : null;
+      return {
+        decoded: dec.map((b) => (b >= 32 && b < 127) || b === 9 || b === 10 || b === 13 ? String.fromCharCode(b) : `\\${b}`).join(''),
+        printable: printableRatio(dec),
+        loopSpan: [m.index, m.index + m[0].length],
+        resultVar,
+      };
     }
   }
   return null;
@@ -93,32 +97,77 @@ function printableRatio(bytes) {
   return bytes.length ? p / bytes.length : 0;
 }
 
-// Inline XOR / arithmetic inside string.char( expr, expr, ... )
-function decodeInlineChar(src) {
-  // string.char(a^K, b^K, ...) or string.char(bit32.bxor(a,K), ...) or char(a-K,...)
-  return src.replace(/string\.char\s*\(([^)]*)\)/g, (whole, inner) => {
-    const parts = inner.split(',');
-    const bytes = [];
-    let usedTransform = false;
-    for (const raw of parts) {
-      const p = raw.trim();
-      let m;
-      if ((m = /^(\d{1,3})\s*(?:~|\^)\s*(\d{1,3})$/.exec(p))) { bytes.push(bxor(+m[1], +m[2])); usedTransform = true; }
-      else if ((m = /(?:bit32\.)?bxor\s*\(?\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)?/.exec(p))) { bytes.push(bxor(+m[1], +m[2])); usedTransform = true; }
-      else if ((m = /^(\d{1,3})\s*-\s*(\d{1,3})$/.exec(p))) { bytes.push(band(+m[1] - +m[2], 0xff)); usedTransform = true; }
-      else if ((m = /^(\d{1,3})$/.exec(p))) { bytes.push(+m[1]); }
-      else return whole; // unknown element — leave whole call alone
-    }
-    if (!bytes.length || !usedTransform) return whole;
-    const ratio = printableRatio(bytes);
-    if (ratio < 0.8) return whole;
-    const s = bytes.map((b) => (b >= 32 && b < 127) ? String.fromCharCode(b) : `\\${b}`).join('');
-    return JSON.stringify(s);
-  });
+// Split an argument list on TOP-LEVEL commas only (ignore commas inside nested
+// parens/brackets/strings) so `bxor(65,7)` isn't split mid-call.
+function splitTopCommas(s) {
+  const parts = [];
+  let depth = 0, last = 0, q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+    if (c === '"' || c === "'") { q = c; continue; }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === ',' && depth === 0) { parts.push(s.slice(last, i)); last = i + 1; }
+  }
+  parts.push(s.slice(last));
+  return parts;
 }
 
-// Replace a `local s = "" ... build loop` producing one decoded string with a
-// literal assignment. Conservative: only rewrite when we decoded >70% printable.
+// Decode one string.char argument element to a byte, or return null.
+// Handles: `a ~ k` (xor), `bit32.bxor(a,k)`/`bxor(a,k)`, `a - k`, `a`, `(a-k)%256`.
+// `a ^ b` is exponentiation (huge) — NOT decoded (returns null → leave call).
+function decodeCharElement(p0) {
+  const p = p0.trim();
+  let m;
+  if ((m = /^(\d{1,3})\s*~\s*(\d{1,3})$/.exec(p))) return bxor(+m[1], +m[2]);
+  if ((m = /(?:bit32\.)?bxor\s*\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/.exec(p))) return bxor(+m[1], +m[2]);
+  if ((m = /^\(?\s*(\d{1,3})\s*-\s*(\d{1,3})\s*\)?(?:\s*%\s*\d{1,3})?$/.exec(p))) return band(+m[1] - +m[2], 0xff);
+  if ((m = /^(\d{1,3})$/.exec(p))) return +m[1];
+  return null;
+}
+
+// Inline XOR / arithmetic inside string.char( ... ) — balanced-paren scan so a
+// nested `bxor(...)` doesn't split the call, then decode each top-level arg.
+function decodeInlineChar(src) {
+  const re = /string\.char\s*\(/g;
+  let m, result = '', last = 0;
+  while ((m = re.exec(src))) {
+    const argStart = m.index + m[0].length;
+    // scan to the matching close paren (skip string literals)
+    let depth = 1, i = argStart, q = null;
+    for (; i < src.length && depth > 0; i++) {
+      const c = src[i];
+      if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+      if (c === '"' || c === "'") { q = c; continue; }
+      if (c === '(') depth++;
+      else if (c === ')') depth--;
+    }
+    if (depth !== 0) break;
+    const inner = src.slice(argStart, i - 1);
+    const parts = splitTopCommas(inner);
+    const bytes = [];
+    let usedTransform = false, ok = true;
+    for (const raw of parts) {
+      const b = decodeCharElement(raw);
+      if (b == null) { ok = false; break; }
+      if (b > 255) { ok = false; break; }
+      bytes.push(b);
+      if (/[~\-]|bxor|\(/.test(raw)) usedTransform = true;
+    }
+    if (!ok || !bytes.length || !usedTransform) continue;
+    if (printableRatio(bytes) < 0.8) continue;
+    const s = bytes.map((b) => (b >= 32 && b < 127) ? String.fromCharCode(b) : `\\${b}`).join('');
+    result += src.slice(last, m.index) + JSON.stringify(s);
+    last = i;
+    re.lastIndex = i;
+  }
+  result += src.slice(last);
+  return result;
+}
+
+// Replace the numeric table AND its whole decode loop with a literal string.
+// Conservative: only rewrite when we decoded >70% printable and got a result var.
 function deobfuscate(source) {
   const src = typeof source === 'string' ? source : '';
   const notes = [];
@@ -127,25 +176,30 @@ function deobfuscate(source) {
   let out = src;
   let recovered = 0;
 
-  // Pass 1: inline string.char with XOR/arithmetic elements.
+  // Pass 1: inline string.char with XOR/arithmetic elements (balanced parens).
   const beforeInline = out;
   out = decodeInlineChar(out);
   if (out !== beforeInline) { recovered++; notes.push('Decoded inline string.char XOR/arith byte sequences.'); }
 
-  // Pass 2: byte-array tables consumed by a decode loop.
-  for (const tbl of numericTables(out)) {
+  // Pass 2: byte-array tables consumed by a decode loop. Replace the WHOLE
+  // `for ... end` decode statement (not just the table) so the indexing loop
+  // doesn't survive to index a now-string literal — and bind the result var.
+  for (const tbl of [...numericTables(out)]) {
     const dec = decodeTableLoop(out, tbl);
-    if (dec && dec.printable >= 0.7 && dec.decoded.length >= 4) {
-      // replace the table literal AND the build loop region with a literal string.
-      // We rewrite the table's assignment to the decoded literal so downstream
-      // concat uses it; junk loop is left but now references a literal.
+    if (dec && dec.resultVar && dec.printable >= 0.7 && dec.decoded.length >= 4) {
+      // replace the for-loop span first (higher index), then the table decl,
+      // so earlier spans stay valid.
+      const loopAssign = `${dec.resultVar} = ${JSON.stringify(dec.decoded)}`;
+      const tableAssign = `local ${tbl.name} = ${JSON.stringify(dec.decoded)} --[[decoded byte array]]`;
+      // apply the later span first
+      const [first, second] = tbl.span[0] < dec.loopSpan[0]
+        ? [[tbl.span, tableAssign], [dec.loopSpan, loopAssign]]
+        : [[dec.loopSpan, loopAssign], [tbl.span, tableAssign]];
+      // order descending by start so replacements don't shift earlier spans
+      const spans = [first, second].sort((a, b) => b[0][0] - a[0][0]);
+      for (const [[s0, s1], repl] of spans) out = out.slice(0, s0) + repl + out.slice(s1);
       recovered++;
-      notes.push(`Decoded byte-array "${tbl.name}" (${tbl.nums.length} bytes) via its XOR/arith build loop.`);
-      // Mark decoded value in a comment for transparency (source-preserving).
-      // The loop already rebuilds it at runtime; we annotate + also inline where safe.
-      out = out.slice(0, tbl.span[0]) +
-        `${tbl.name} = ${JSON.stringify(dec.decoded)} --[[decoded from byte array]]` +
-        out.slice(tbl.span[1]);
+      notes.push(`Decoded byte-array "${tbl.name}" (${tbl.nums.length} bytes) — replaced its decode loop with the literal string.`);
     }
   }
 
