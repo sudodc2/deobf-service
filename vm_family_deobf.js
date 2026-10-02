@@ -135,6 +135,37 @@ function handlerSemantics(src) {
   return out;
 }
 
+// Some VMs (Luraph) dispatch as an `if op==N ... elseif op==N` chain instead of
+// a named-handler table. Extract each branch's opcode number + tag its body.
+function dispatchBranches(src) {
+  const probes = [
+    [/loadstring|setfenv|string\.dump/, 'LOAD/closure'],
+    [/string\.char|string\.byte|string\.sub/, 'string-const'],
+    [/table\.insert|table\.concat|table\.unpack|table\.pack/, 'table'],
+    [/bit32|\.band|\.bor|\.bxor|\.lshift|\.rshift/, 'bit'],
+    [/getfenv|getgenv|getrenv|getsenv|identifyexecutor/, 'env/global'],
+    [/pcall|xpcall|error|assert/, 'protected-call'],
+    [/ipairs|pairs|\bnext\b|for\s/, 'loop/iter'],
+    [/coroutine|task\.|\byield\b/, 'coroutine'],
+    [/==|~=|<=|>=|<|>/, 'compare/branch'],
+    [/math\.|\+|\-|\*|\/|%/, 'arith'],
+    [/\breturn\b/, 'return'],
+  ];
+  const out = [];
+  const re = /(?:if|elseif)\s+[\w.%\[\]]+\s*==\s*(\d+)\s*then/g;
+  const marks = [];
+  let m;
+  while ((m = re.exec(src)) !== null) marks.push({ op: m[1], start: m.index + m[0].length });
+  for (let i = 0; i < marks.length && out.length < 80; i++) {
+    const end = i + 1 < marks.length ? marks[i + 1].start : marks[i].start + 900;
+    const body = src.slice(marks[i].start, Math.min(end, marks[i].start + 900));
+    const tags = [];
+    for (const [p, tag] of probes) if (p.test(body)) tags.push(tag);
+    out.push({ name: `op_${marks[i].op}`, tags });
+  }
+  return out;
+}
+
 // Locate the dense escaped regions — the compiled instruction streams the VM
 // deserializes (the program's actual body, encoded).
 function instructionBlobs(src) {
@@ -153,7 +184,8 @@ function deobfuscate(source) {
   const strings = extractStrings(src);
   const api = apiSurface(strings);
   const handlers = opcodeHandlers(src);
-  const semantics = handlerSemantics(src);
+  let semantics = handlerSemantics(src);
+  if (!semantics.length) semantics = dispatchBranches(src);
   const blobs = instructionBlobs(src);
   const callArgs = callArgConstants(src);
   const blob = encodedBlob(src);
