@@ -103,8 +103,9 @@ const KNOWN = [
     // a numeric byte-array table + a string.char(t[i]) rebuild loop is the
     // signature regardless of whether an xor/arith key is applied.
     struct: [
-      /\{\s*\d{1,3}\s*(,\s*\d{1,3}\s*){5,}\}/,
-      /string\.char\s*\(\s*\w+\s*\[\s*\w+\s*\]|(?:bit32\.)?bxor\s*\(\s*\w+\s*\[|\w+\s*\[\s*\w+\s*\]\s*~/,
+      /\{\s*\d{1,3}\s*(,\s*\d{1,3}\s*){4,}\}/,
+      // string.char(t[i]) OR an aliased char fn x(t[i]) fed through a concat loop
+      /(?:string\.char|\w+)\s*\(\s*\w+\s*\[\s*\w+\s*\]\s*\)|(?:bit32\.)?bxor\s*\(\s*\w+\s*\[|\w+\s*\[\s*\w+\s*\]\s*~/,
     ],
   },
   {
