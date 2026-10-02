@@ -97,6 +97,36 @@ const KNOWN = [
       /local\s+\w+\s*=\s*string\.char\s*;\s*local\s+\w+\s*=\s*string\.byte/,
     ],
   },
+  {
+    name: 'Lua XOR-key string obf',
+    marks: [/xor.?key/i, /decryp1/i],
+    struct: [/string\.char\s*\([^)]*\^/, /bit32\.bxor\s*\(\s*\w+\s*\[/, /\{\s*\d{1,3}\s*(,\s*\d{1,3}\s*){9,}\}/],
+  },
+  {
+    name: 'String-encryption obfuscator',
+    marks: [/ferib/i, /goofyscat/i, /wynfusc/i, /lua.?obfuscator/i],
+    struct: [/local\s+\w+\s*=\s*\{\s*function\s*\([^)]*\)\s*return/, /\\x[0-9a-fA-F]{2}\\x[0-9a-fA-F]{2}/],
+  },
+  {
+    name: 'Soteria',
+    marks: [/SOTR[\x01$!]/i, /soteria/i, /SOTR_/],
+    struct: [/return\s*\(\s*\{[\s\S]{0,40}=function/, /bit32\./],
+  },
+  {
+    name: 'Centurion',
+    marks: [/centurion/i, /centurion\.best/i],
+    struct: [/return\s*\(\s*\{[\s\S]{0,40}=function/],
+  },
+  {
+    name: 'wYnFuscate',
+    marks: [/wynfusc/i, /wYnFuscate/i],
+    struct: [/local\s+\w+\s*=\s*\{\s*function/, /(\\x[0-9a-fA-F]{2}|\\\d{1,3}){20,}/],
+  },
+  {
+    name: 'MoonVeil v2',
+    marks: [/moonveil/i, /mv2_/i],
+    struct: [/function\s+\w+\([\w,]{3,20}\)/, /\w+\[\d{4,5}\]/],
+  },
 ];
 
 // Structural Luraph fingerprint (survives watermark removal — e.g. onyxv2 which

@@ -19,6 +19,9 @@ const karma = require('./karma_deobf.js');
 const kersone = require('./kersone_deobf.js');
 const wearedevs = require('./wearedevs_deobf.js');
 const generic = require('./generic_deobf.js');
+const xorkey = require('./xor_key_deobf.js');
+const strenc = require('./string_enc_deobf.js');
+const vmfam = require('./vm_family_deobf.js');
 
 const ROOT = __dirname;
 const HERCULES = path.join(ROOT, 'tools/hercules/deobfhercules.py');
@@ -607,6 +610,10 @@ app.post('/deobf', async (req, res) => {
       // KarmaProtect = static string-transform obfuscator (dedicated decoder).
       // "KarmaVM"/"Luraph" are runtime bytecode VMs with no static full-source
       // recovery — fall through to generic best-effort (keeps the detected name).
+      else if (which.includes('xor') || which.includes('decryp')) result = xorkey.deobfuscate(source);
+      else if (which.includes('string-enc') || which.includes('ferib') || which.includes('goofys') || which.includes('luaobfusc')) result = strenc.deobfuscate(source);
+      else if (which.includes('wynfusc')) result = vmfam.deobfuscate(source);
+      else if (which.includes('soteria') || which.includes('centurion') || which.includes('moonveil v2')) result = vmfam.deobfuscate(source);
       else if (which.includes('karma') && !which.includes('karmavm')) result = karma.deobfuscate(source);
       else {
         // No named format matched — attempt best-effort generic recovery on ANY
