@@ -611,7 +611,8 @@ app.post('/deobf', async (req, res) => {
       // "KarmaVM"/"Luraph" are runtime bytecode VMs with no static full-source
       // recovery — fall through to generic best-effort (keeps the detected name).
       else if (which.includes('xor') || which.includes('decryp')) result = xorkey.deobfuscate(source);
-      else if (which.includes('psu')) result = strenc.deobfuscate(source);
+      else if (which.includes('psu') || which.includes('byte-table')) result = strenc.deobfuscate(source);
+      else if (which.includes('lual')) result = strenc.deobfuscate(source);
       else if (which.includes('string-enc') || which.includes('ferib') || which.includes('goofys') || which.includes('luaobfusc')) result = strenc.deobfuscate(source);
       else if (which.includes('wynfusc')) result = vmfam.deobfuscate(source);
       else if (which.includes('soteria') || which.includes('centurion') || which.includes('moonveil v2')) result = vmfam.deobfuscate(source);

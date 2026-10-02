@@ -109,6 +109,13 @@ const KNOWN = [
     ],
   },
   {
+    name: 'Byte-table loadstring',
+    // Flurace/ByteProtect/local-byte-array: {"\ddd","\ddd",...} table fed to
+    // loadstring / table.concat — string-encryption family shape.
+    marks: [/Flurace/i, /ByteProtect/i, /Secure by Flurace/i],
+    struct: [/\{\s*"(?:\\\d{1,3}|\\x[0-9a-fA-F]{2})"/, /table\.concat\s*\(|loadstring\s*\(/],
+  },
+  {
     name: 'String-encryption obfuscator',
     marks: [/ferib/i, /goofyscat/i, /wynfusc/i, /lua.?obfuscator/i],
     // thunk-table `{function()return"s"end,...}` OR a dense \xHH/\ddd escaped

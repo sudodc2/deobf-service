@@ -149,6 +149,29 @@ function deobfuscate(source) {
     }
   );
 
+  // Pass 2c: constant-array index folding — `local a={v1,v2,...} ... a[i]` ->
+  // the literal value. lual.org / trivial constant-array obfuscators.
+  {
+    const tbl = /local\s+(\w+)\s*=\s*\{([\s\S]{0,2000}?)\}/.exec(out);
+    if (tbl && /^[\s\d,"'x0-9a-fA-F.-]*$/.test(tbl[2])) {
+      const elems = tbl[2].split(',').map((e) => e.trim()).filter(Boolean);
+      if (elems.length && elems.every((e) => /^-?\d+(\.\d+)?$/.test(e) || /^"(?:\\.|[^"\\])*"$/.test(e) || /^'(?:\\.|[^'\\])*'$/.test(e))) {
+        const name = tbl[1];
+        let folded = 0;
+        out = out.replace(new RegExp(`\\b${name}\\s*\\[\\s*([\\d+\\s*/-]+)\\s*\\]`, 'g'), (w, expr) => {
+          let idx;
+          try { idx = Function(`"use strict";return (${expr});`)(); } catch (_) { return w; }
+          idx = idx | 0;
+          if (idx < 1 || idx > elems.length) return w;
+          const v = elems[idx - 1];
+          if (/^['"]/.test(v)) { folded++; return JSON.stringify(unescapeLua(v.slice(1, -1))); }
+          folded++; return v;
+        });
+        if (folded) { recovered++; notes.push(`Folded ${folded} constant-array index(ices) (${name}[i] -> literal).`); }
+      }
+    }
+  }
+
   // Pass 3: inline string.char(n,n,...) calls.
   const beforeChar = out;
   out = out.replace(/string\.char\s*\(\s*[\d\s,]+\)/g, (w) => {
