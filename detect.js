@@ -100,7 +100,12 @@ const KNOWN = [
   {
     name: 'Lua XOR-key string obf',
     marks: [/xor.?key/i, /decryp1/i],
-    struct: [/string\.char\s*\([^)]*\^/, /bit32\.bxor\s*\(\s*\w+\s*\[/, /\{\s*\d{1,3}\s*(,\s*\d{1,3}\s*){9,}\}/],
+    // a numeric byte-array table + a string.char(t[i]) rebuild loop is the
+    // signature regardless of whether an xor/arith key is applied.
+    struct: [
+      /\{\s*\d{1,3}\s*(,\s*\d{1,3}\s*){5,}\}/,
+      /string\.char\s*\(\s*\w+\s*\[\s*\w+\s*\]|(?:bit32\.)?bxor\s*\(\s*\w+\s*\[|\w+\s*\[\s*\w+\s*\]\s*~/,
+    ],
   },
   {
     name: 'String-encryption obfuscator',
