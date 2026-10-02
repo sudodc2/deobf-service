@@ -107,6 +107,34 @@ function opcodeHandlers(src) {
   return [...names];
 }
 
+// For each opcode-handler name, capture a window of its body and classify the
+// dominant builtin calls so the dispatch reads as semantic ops, not bare names.
+function handlerSemantics(src) {
+  const probes = [
+    [/loadstring|setfenv|string\.dump/, 'LOAD/closure'],
+    [/string\.char|string\.byte|string\.sub/, 'string-const'],
+    [/table\.insert|table\.concat|table\.unpack|table\.pack/, 'table'],
+    [/bit32|\.band|\.bor|\.bxor|\.lshift|\.rshift/, 'bit'],
+    [/getfenv|getgenv|getrenv|getsenv|identifyexecutor/, 'env/global'],
+    [/pcall|xpcall|error|assert/, 'protected-call'],
+    [/ipairs|pairs|\bnext\b|for\s/, 'loop/iter'],
+    [/coroutine|task\.|\byield\b/, 'coroutine'],
+    [/==|~=|<=|>=|<|>/, 'compare/branch'],
+    [/math\.|\+|\-|\*|\/|%/, 'arith'],
+    [/\breturn\b/, 'return'],
+  ];
+  const out = [];
+  const re = /(?:[,{]\s*|local\s+)([A-Za-z_]\w{0,3})\s*=\s*function\s*\(/g;
+  let m;
+  while ((m = re.exec(src)) !== null && out.length < 60) {
+    const body = src.slice(m.index + m[0].length, m.index + m[0].length + 700);
+    const tags = [];
+    for (const [p, tag] of probes) if (p.test(body)) tags.push(tag);
+    out.push({ name: m[1], tags });
+  }
+  return out;
+}
+
 // Locate the dense escaped regions — the compiled instruction streams the VM
 // deserializes (the program's actual body, encoded).
 function instructionBlobs(src) {
@@ -125,6 +153,7 @@ function deobfuscate(source) {
   const strings = extractStrings(src);
   const api = apiSurface(strings);
   const handlers = opcodeHandlers(src);
+  const semantics = handlerSemantics(src);
   const blobs = instructionBlobs(src);
   const callArgs = callArgConstants(src);
   const blob = encodedBlob(src);
@@ -144,7 +173,7 @@ function deobfuscate(source) {
     `-- constant pool + dispatch structure + API surface — the program's real logic.`,
     ``,
     `-- opcode-handler dispatch (${handlers.length} handlers):`,
-    ...handlers.slice(0, 40).map((h, i) => `--   op_${i}: handler '${h}'`),
+    ...(semantics.length ? semantics.slice(0, 40).map((h, i) => `--   op_${i}: handler '${h.name}'${h.tags.length ? '  [' + h.tags.join(', ') + ']' : ''}`) : handlers.slice(0, 40).map((h, i) => `--   op_${i}: handler '${h}'`)),
     ``,
     blob ? `-- encoded instruction stream: ${blob.magic || ''} ${blob.bytes}B @ offset ${blob.offset}` : `-- encoded instruction streams: ${blobs.map((b) => `${b.bytes}B@off${b.offset}`).join(', ') || 'none'}`,
     ``,
