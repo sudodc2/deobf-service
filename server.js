@@ -628,7 +628,9 @@ app.post('/deobf', async (req, res) => {
       // VM-family engines (constant-pool / register-VM): best-effort recovery.
       else if (which.includes('luraph') || which.includes('synapsexen') || which.includes('boronide')
                || which.includes('77fuscator') || which.includes('lps') || which.includes('ironbrew')
-               || which.includes('lua obscura') || which.includes('lualock') || which.includes('aztupbrew')) result = vmfam.deobfuscate(source);
+               || which.includes('lua obscura') || which.includes('lualock') || which.includes('aztupbrew')
+               || which.includes('pew') || which.includes('voltils') || which.includes('syscure')
+               || which.includes('karmavm') || which.includes('env-keyed')) result = vmfam.deobfuscate(source);
       else {
         // No named format matched — attempt best-effort generic recovery on ANY
         // input instead of giving up.
