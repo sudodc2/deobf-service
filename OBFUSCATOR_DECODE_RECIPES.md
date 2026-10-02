@@ -307,3 +307,34 @@ Confirmed the dynamic-dump path boots these VMs in a Luau harness
   decoded values, so full devirt = replicate the per-version byte-decode, which
   is the multi-week per-engine effort. Constant-pool + dispatch-shape +
   LPH#-blob extraction (what `vm_family` does) is the tractable recovery.
+
+
+## Dynamic-devirt harness — per-engine tractability (Lune, real samples)
+
+The polymorphic-stub env harness boots each bytecode VM and reveals how deep
+the devirt can go before the deserializer wall:
+
+- **77fuscator (0.6.5):** VM FULLY EXECUTES its decoded payload — ran to the
+  payload's own guard `[-]: Cannot run bedol hub. you already executed` /
+  `Error try again in nextyear`. The decoded program runs real logic through
+  the VM's env (its `print` fires). No `loadstring` boundary — the payload
+  executes as internal bytecode. `bj`-register `while true do if bj>=N` numeric
+  state machine (31 machines); consts decode via `string.sub` char-shift
+  (interceptable). MOST tractable VM for a full devirt — the payload runs, so
+  hook the VM's string-decode / opcode stream to capture the program.
+
+- **Luraph v13:** boots, executes to `internal:3` then `call a nil value` —
+  `LPH#` deserializer produces a nil register. Globals satisfied (only literal
+  access is `wait`). Data-driven decode wall.
+
+- **Boronide (herrtt):** `call a nil value` at `:5` — same deserializer-
+  register class as Luraph.
+
+- **SynapseXen:** hangs (waits on a real Roblox API the poly-stub can't
+  satisfy, or an inner scheduler loop) — needs real `game`/`task` semantics.
+
+- Pattern: state-machine VMs (77fuscator) that run their decoded payload are
+  more tractable than data-driven deserializers (Luraph/Boronide/Soteria)
+  whose field-resolution self-desyncs. For a run-to-payload VM, the full
+  devirt = hook its internal string-decode + opcode dispatch to dump the
+  program; for a deserializer VM it = port the byte-decode.
