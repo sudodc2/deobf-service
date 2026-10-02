@@ -14,20 +14,20 @@ const KNOWN = [
     struct: [/return\(function\(\.\.\.\)return\(function\(\.\.\.\)/],
   },
   {
-    name: 'WeAreDevs',
-    banner: /wearedevs\.net\/obfuscator/i,
-    // WeAreDevs is Prometheus under the hood — --[[ vX https://wearedevs.net/obfuscator ]]
-    // banner + local a={"\ddd";"\ddd";...} escaped-string const table.
-    marks: [/wearedevs/i, /wearedevs\.net/i],
-    struct: [/local\s+\w+\s*=\s*\{\s*"\\\d{2,3}/, /(\\\d{2,3}){20,}/],
-  },
-  {
     name: 'Prometheus',
     banner: /Prometheus Obfuscator by|This Script is Part of the Prometheus/i,
     marks: [/Prometheus Obfuscator by levno-710/i, /This Script is Part of the Prometheus/i, /__prometheus_/, /_WATERMARK/],
     // ConstantArray rotate/shuffle decoder + WrapInFunction shell — survives
     // variable renaming, so it fingerprints even a "Weak" build.
-    struct: [/return\(function\(\.\.\.\)/, /for \w+,\w+ in ipairs\(\{\{\d/],
+    struct: [/{(?:\s*"\\\d{2,3})+/, /for\s+\w+,\w+\s+in\s+ipairs\s*\(\s*\{\s*\{|return\s*\(\s*function\s*\(\s*\.\.\.\s*\)/],
+  },
+  {
+    name: 'WeAreDevs',
+    banner: /wearedevs\.net\/obfuscator/i,
+    // WeAreDevs is Prometheus under the hood — --[[ vX https://wearedevs.net/obfuscator ]]
+    // banner + local a={"\ddd";"\ddd";...} escaped-string const table.
+    marks: [/wearedevs/i, /wearedevs\.net/i],
+    struct: [/local\s+\w+\s*=\s*\{(?:\s*"\\\d{2,3})+/, /(\\\d{2,3}){20,}/],
   },
   {
     name: 'MoonSec',
