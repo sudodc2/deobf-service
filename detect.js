@@ -151,7 +151,10 @@ const KNOWN = [
     // lual.org free web obfuscator — constant-array + a rotating decoder table
     // wrapped in a return(function(...)...end) shell; watermark in header.
     marks: [/lual\.org/i, /Obfuscated by lual/i, /lualorg/i],
-    struct: [/local\s+\w+\s*=\s*\{\s*\d+\s*,/, /\w+\s*\[\s*\w+\s*\+\s*\d+\s*\]/],
+    // the const-array + literal-index-read shape is lual-specific when the
+    // source is *mostly* the decoder table — require a real indexed read, not
+    // any `t[i]` (IronBrew/LZW fill loops were stealing this).
+    struct: [/local\s+\w+\s*=\s*\{\s*\d+\s*,\s*\d+/, /\w+\s*\[\s*\w+\s*[+\-]\s*\d+\s*\]/],
   },
   {
     name: 'Env-keyed/sealed',
@@ -164,9 +167,10 @@ const KNOWN = [
   {
     name: 'IronBrew2',
     marks: [/ironbrew/i, /IB2_/i],
-    // IronBrew2 ships a compact register-VM: numeric opcode table + a
-    // constant-pool it indexes by scrambled key, with a return(...)() shell.
-    struct: [/return\s*\(\s*function/, /(\w+\s*=\s*\{\s*\d+\s*,){2,}/, /bit32\.|\bbor\b|\bbxor\b/],
+    // IronBrew2's real signature: an LZW string decompressor
+    // `local function s(d) ... n[l]=i(l) ... local a=256` feeding a register-VM
+    // closure `local function h(l,e,a)` that re-enters `h(i(),{},H())`.
+    struct: [/local\s+function\s+\w+\s*\(\s*\w+\s*\)\s*local\s+\w+\s*,\w+\s*,\w+\s*=/, /\w+\[\s*\w+\s*\]\s*=\s*\w+\s*\(\s*\w+\s*\)/, /local\s+\w+\s*=\s*256/, /local\s+function\s+\w+\s*\(\s*\w+\s*,\s*\w+\s*,\s*\w+\s*\)/],
   },
   {
     name: 'PSU',
