@@ -138,8 +138,10 @@ const KNOWN = [
   },
   {
     name: 'wYnFuscate',
-    marks: [/wynfusc/i, /wYnFuscate/i],
-    struct: [/local\s+\w+\s*=\s*\{\s*function/, /(\\x[0-9a-fA-F]{2}|\\\d{1,3}){20,}/],
+    // real banner `-- Protected by wYnFuscate: https://wynfuscate.com` + the
+    // getfenv bootstrap `return(function(Ja,JB,JW,...)if not Ja then Ja=getfenv`
+    marks: [/wynfusc/i, /wYnFuscate/i, /Protected by wYnFuscate/i],
+    struct: [/return\s*\(\s*function\s*\(\s*J\w+\s*,\s*J\w+\s*,\s*J\w+/, /if\s+not\s+\w+\s+then\s+\w+\s*=\s*getfenv/],
   },
   {
     name: 'MoonVeil v2',
@@ -185,6 +187,41 @@ const KNOWN = [
     // PSU wraps the whole source in a giant escaped-string constant fed to a
     // char-build loop — the (\d{3}){n} signature + loadstring tail.
     struct: [/(\\\d{2,3}){30,}/, /loadstring|string\.char/],
+  },
+  {
+    name: 'SynapseXen',
+    // `--[[ Synapse Xen vX by Synapse GP / VM Hash: <sha> ]]` + the signature
+    // `SynapseXen_<mixed lI garbage>=select` locals — the camel prefix is unique.
+    marks: [/Synapse\s*Xen/i, /SynapseXen_/i],
+    struct: [/SynapseXen_\w+/, /VM\s+Hash\s*:/],
+  },
+  {
+    name: 'Boronide',
+    // herrtt's obfuscator — `--[[ herrtt's obfuscator, vX ]]` + the
+    // `([[herrtts obf, ...]]):gsub('(.*)',function` bootstrap.
+    marks: [/herrtt'?s?\s*obf/i, /herrtt/i],
+    struct: [/\(\[\[[\s\S]{0,60}?\]\]\)\s*:?gsub\s*\(|:gsub\s*\(\s*['"]\.\*['"]/],
+  },
+  {
+    name: '77fuscator',
+    // `do local a=[[77fuscator vX ...]];return(function(a)` + numeric
+    // `bj=0 while true do if bj>=` control-flow state machine.
+    marks: [/77fuscator/i],
+    struct: [/while\s+true\s+do\s+if\s+\w+\s*(>=|<=|<|>)/, /=\s*0\s+while\s+true\s+do/],
+  },
+  {
+    name: 'LPS',
+    // Ascii85-style decoder — the powers-of-85 accumulate `(t-33)+(s-33)*85+
+    // (r-33)*7225+(q-33)*614125+(c-33)*52200625` is unique to LPS.
+    marks: [/\*52200625|\*614125/],
+    struct: [/\*\s*(85|7225|614125|52200625)/, /\[\^!-u?z\]/],
+  },
+  {
+    name: 'IronBrew3',
+    // `--ironbrew3:tm:, vX` + `repeat if not(not(` control-flow + the
+    // scrambled multi-char param shell.
+    marks: [/ironbrew\s*3/i, /ironbrew3/i, /:tm:,\s*v?\d/i],
+    struct: [/repeat\s+if\s+not\s*\(\s*not\s*\(/, /return\s*\(\s*function\s*\(\s*\w+\s*,\s*\w+\s*,\s*\w+\s*,\s*\w+\s*,\s*\w+\s*,\s*\w+/],
   },
 ];
 
