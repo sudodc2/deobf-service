@@ -32,22 +32,63 @@ function detectVmFamily(src) {
   return hits;
 }
 
-// Extract printable string runs >=4 from a decoded/escaped blob (constant pool).
+// Extract real string constants — short readable literals, NOT giant code blobs.
+// A VM obfuscator's constant pool is its quoted literals; we keep printable
+// strings under 120 chars (real API names / messages), decoded from escapes.
 function extractStrings(src) {
-  // gather long-bracket string literals and escaped runs
   const out = new Set();
-  const litRe = /\[(=*)\[([\s\S]*?)\]\1\]/g;
   let m;
-  while ((m = litRe.exec(src))) {
-    const body = m[2];
-    for (const mm of body.matchAll(/[ -~]{6,}/g)) out.add(mm[0]);
+  // quoted literals (Luraph/other VMs store constants as "\ddd"/"\xHH"/plain)
+  const strRe = /"((?:\\.|[^"\\]){2,120})"|'((?:\\.|[^'\\]){2,120})'/g;
+  while ((m = strRe.exec(src))) {
+    const raw = m[1] || m[2];
+    const dec = raw.replace(/\\x([0-9a-fA-F]{2})|\\(\d{1,3})/g, (w, x, d) => String.fromCharCode(x ? parseInt(x, 16) : parseInt(d, 10)));
+    for (const run of dec.matchAll(/[ -~]{3,}/g)) {
+      const s = run[0];
+      // keep real constants: API names, identifiers, short messages — not
+      // minified code fragments (which contain ;,=,(){} and keyword soup)
+      if (/[;{}]|\b(function|local|return|end|then|else|do|if|for|while)\b/.test(s)) continue;
+      if (s.length >= 3 && !/^\d+$/.test(s)) out.add(s);
+    }
   }
-  const escRe = /"((?:\\x[0-9a-fA-F]{2}|\\\d{1,3}|[ -~]){8,})"/g;
-  while ((m = escRe.exec(src))) {
-    const dec = m[1].replace(/\\x([0-9a-fA-F]{2})|\\(\d{1,3})/g, (w, x, d) => String.fromCharCode(x ? parseInt(x, 16) : parseInt(d, 10)));
-    for (const mm of dec.matchAll(/[ -~]{6,}/g)) out.add(mm[0]);
+  return [...out].slice(0, 400);
+}
+
+// The real constant pool of a call-arg VM (Luraph v13+): the payload is passed
+// as arguments to the outer function — `)(116,table,_ENV,"v",256,type,
+// 4294967296,rawget,117,bit,...)`. Parse that tail's identifier/number/string
+// constants — the program's actual API surface + numeric constants.
+function callArgConstants(src) {
+  // find the invocation tail `)(...)` — the arg list after the outer function
+  const call = src.match(/\)\s*\(\s*([\s\S]{0,6000}?)\)\s*;?\s*$/);
+  if (!call) return [];
+  const args = call[1];
+  const out = [];
+  const seen = new Set();
+  const push = (v) => { if (v != null && !seen.has(v)) { seen.add(v); out.push(v); } };
+  for (const m of args.matchAll(/"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'/g)) {
+    const raw = m[1] !== undefined ? m[1] : m[2];
+    const dec = raw.replace(/\\x([0-9a-fA-F]{2})|\\(\d{1,3})/g, (w, x, d) => String.fromCharCode(x ? parseInt(x, 16) : parseInt(d, 10)));
+    if (dec.length && dec.length < 500 && !/^[0-9A-F]{40,}$/.test(dec)) push(JSON.stringify(dec));
   }
-  return [...out].filter((s) => s.length >= 6 && !/^\d+$/.test(s)).slice(0, 400);
+  for (const m of args.matchAll(/\b(getfenv|setfenv|loadstring|load|pcall|xpcall|coroutine|task|wait|spawn|string|table|math|bit32|buffer|debug|game|workspace|rawget|rawset|rawequal|rawlen|setmetatable|getmetatable|select|unpack|tonumber|tostring|type|pairs|ipairs|next|print|error|assert|require|identifyexecutor|getexecutor|hookfunction|newcclosure|getgenv|getrenv|_ENV|_G)\b/g)) push(m[1]);
+  for (const m of args.matchAll(/\b(\d{1,20})\b/g)) push(m[1]);
+  return out;
+}
+
+// The giant encoded instruction stream — a dense hex/alnum blob (Luraph's
+// `"LPH#<bytecode>"` payload — LPH# magic then ~200KB alnum) or a long \ddd
+// escape run. Report magic + size + offset.
+function encodedBlob(src) {
+  let best = null;
+  // `MAGIC#<alnum>` — Luraph/Soteria-style tagged bytecode blobs
+  for (const m of src.matchAll(/([A-Z]{2,6}#?)([0-9A-Za-z]{400,})/g)) if (!best || m[2].length > best.bytes) best = { offset: m.index, bytes: m[2].length, magic: m[1] };
+  for (const m of src.matchAll(/([0-9A-Za-z]{1000,})/g)) if (!best || m[1].length > best.bytes) best = { offset: m.index, bytes: m[1].length };
+  for (const m of src.matchAll(/"((?:\\x[0-9a-fA-F]{2}|\\\d{1,3}){100,})"/g)) {
+    const b = (m[1].match(/\\/g) || []).length;
+    if (!best || b > best.bytes) best = { offset: m.index, bytes: b };
+  }
+  return best;
 }
 
 function apiSurface(strings) {
@@ -55,12 +96,14 @@ function apiSurface(strings) {
   return api;
 }
 
-// Recover the opcode-handler dispatch table — the `X=function(a,b) ... end`
-// methods the VM's interpreter loop calls per opcode. This is the program's
-// decoded instruction set surface (same shape MoonSec's disasm exposes).
+// Recover the opcode-handler dispatch — interpreter functions the VM calls
+// per opcode. Shapes seen in the wild: `X=function(`, `local function X(`,
+// and method-table entries `key=function(self,` / `key=function(v,`.
 function opcodeHandlers(src) {
   const names = new Set();
-  for (const m of src.slice(0, 60000).matchAll(/[,{]\s*([A-Za-z_]\w?)\s*=\s*function\s*\(/g)) names.add(m[1]);
+  for (const m of src.matchAll(/[,{]\s*([A-Za-z_]\w?)\s*=\s*function\s*\(/g)) names.add(m[1]);
+  for (const m of src.matchAll(/local\s+function\s+([A-Za-z_]\w?)\s*\(/g)) names.add(m[1]);
+  for (const m of src.matchAll(/[,{]\s*([A-Za-z_]\w+)\s*=\s*function\s*\(\s*(?:self|v|s|a|e)\b/g)) names.add(m[1]);
   return [...names];
 }
 
@@ -83,12 +126,18 @@ function deobfuscate(source) {
   const api = apiSurface(strings);
   const handlers = opcodeHandlers(src);
   const blobs = instructionBlobs(src);
+  const callArgs = callArgConstants(src);
+  const blob = encodedBlob(src);
+  // prefer the call-arg constant list (the real VM constant pool) when present
+  const constants = callArgs.length ? callArgs : strings;
   const notes = [
     `${tag}: this obfuscator compiles the real program into a custom bytecode/register VM — the original .lua source is not stored in the file. Recovered the decoded constant pool + structure (best-effort; full devirtualization requires the VM deserializer trace).`,
   ];
+  if (callArgs.length) notes.push(`Recovered ${callArgs.length} call-argument constants (the VM's constant pool): ${callArgs.slice(0, 24).join(', ')}${callArgs.length > 24 ? ', …' : ''}`);
   if (api.length) notes.push(`Recovered ${strings.length} constant-pool strings (${api.length} API surface): ${api.slice(0, 24).join(', ')}${api.length > 24 ? ', …' : ''}`);
   if (handlers.length) notes.push(`Opcode-handler dispatch table: ${handlers.length} handler methods (${handlers.slice(0, 16).join(', ')}${handlers.length > 16 ? ', …' : ''}) — the VM's decoded instruction surface.`);
-  if (blobs.length) notes.push(`${blobs.length} encoded instruction stream(s) located (${blobs.map((b) => b.bytes + 'B').join(', ')}) — the compiled program body the VM deserializes.`);
+  if (blob) notes.push(`Encoded instruction stream located: ${blob.magic ? blob.magic + ' ' : ''}${blob.bytes}B @ offset ${blob.offset} — the compiled program body the VM deserializes.`);
+  else if (blobs.length) notes.push(`${blobs.length} encoded instruction stream(s) located (${blobs.map((b) => b.bytes + 'B').join(', ')}) — the compiled program body the VM deserializes.`);
   const head = [
     `-- Devirtualized (best-effort) from: ${tag}`,
     `-- This obfuscator ships a bytecode/register-VM, not source. Below is the recovered`,
@@ -97,10 +146,10 @@ function deobfuscate(source) {
     `-- opcode-handler dispatch (${handlers.length} handlers):`,
     ...handlers.slice(0, 40).map((h, i) => `--   op_${i}: handler '${h}'`),
     ``,
-    `-- encoded instruction streams: ${blobs.map((b) => `${b.bytes}B@off${b.offset}`).join(', ') || 'none'}`,
+    blob ? `-- encoded instruction stream: ${blob.magic || ''} ${blob.bytes}B @ offset ${blob.offset}` : `-- encoded instruction streams: ${blobs.map((b) => `${b.bytes}B@off${b.offset}`).join(', ') || 'none'}`,
     ``,
     `local recovered_constants = {`,
-    ...strings.slice(0, 200).map((s) => `  ${JSON.stringify(s)},`),
+    ...constants.slice(0, 200).map((s) => `  ${/^[\d"']/.test(s) ? s : JSON.stringify(s)},`),
     `}`,
     ``,
     `-- API surface detected:`,
