@@ -22,7 +22,10 @@ const KNOWN = [
   {
     name: 'MoonSec',
     marks: [/moonsec/i, /moonsec\.(to|com|net)/i, /MoonSecV?\s*3/i],
-    struct: [/return\s*\(?function\(\.\.\.\)/, /(\\\d{1,3}){40,}/],
+    // real MoonSec signature: `c%0x...` hex-remainder arithmetic inside the
+    // decode loop + the giant escaped-string blob — the function()...shell +
+    // \ddd alone matched Ferib/IronBrew too loosely.
+    struct: [/%0x[0-9a-fA-F]/, /(\\\d{1,3}){40,}|local\s+\w\s*=\s*string\.byte/],
   },
   {
     name: 'Moonveil',
@@ -105,7 +108,7 @@ const KNOWN = [
     struct: [
       /\{\s*\d{1,3}\s*(,\s*\d{1,3}\s*){4,}\}/,
       // string.char(t[i]) OR an aliased char fn x(t[i]) fed through a concat loop
-      /(?:string\.char|\w+)\s*\([^()]*?\w+\s*\[\s*\w+\s*\]|(?:bit32\.)?bxor\s*\([^)]*?\w+\s*\[|\w+\s*\[\s*\w+\s*\]\s*~/,
+      /(?:string\.char|\w{1,40})\s*\(\s*\w{1,40}\s*\[\s*\w{1,40}\s*\]|bxor|\w{1,40}\s*\[\s*\w{1,40}\s*\]\s*~/,
     ],
   },
   {
@@ -179,7 +182,10 @@ const KNOWN = [
     // IronBrew2's real signature: an LZW string decompressor
     // `local function s(d) ... n[l]=i(l) ... local a=256` feeding a register-VM
     // closure `local function h(l,e,a)` that re-enters `h(i(),{},H())`.
-    struct: [/local\s+function\s+\w+\s*\(\s*\w+\s*\)\s*local\s+\w+\s*,\w+\s*,\w+\s*=/, /\[\s*\w+\s*\]\s*=\s*\w+\s*\(\s*\w+\s*\)/, /local\s+\w+\s*=\s*256/, /local\s+function\s+\w+\s*\(\s*\w+\s*,\s*\w+\s*,\s*\w+\s*\)/],
+    struct: [/local\s+function\s+\w+\s*\(\s*\w+\s*\)\s*local\s+\w+\s*,\w+\s*,\w+\s*=/, /\[\s*\w+\s*\]\s*=\s*\w+\s*\(\s*\w+\s*\)/, /local\s+\w+\s*=\s*256/, /local\s+function\s+\w+\s*\(\s*\w+\s*,\s*\w+\s*,\s*\w+\s*\)/,
+      // IronBrew2's builtin-alias preamble — single-letter locals bound to
+      // string.byte/sub/char + math.ldexp + getfenv (ldexp is near-unique).
+      /local\s+\w\s*=\s*string\.byte\b/, /local\s+\w\s*=\s*math\.ldexp\b/],
   },
   {
     name: 'PSU',
@@ -215,6 +221,17 @@ const KNOWN = [
     // (r-33)*7225+(q-33)*614125+(c-33)*52200625` is unique to LPS.
     marks: [/\*52200625|\*614125/],
     struct: [/\*\s*(85|7225|614125|52200625)/, /\[\^!-u?z\]/],
+  },
+  {
+    name: 'LuaObfuscator (Ferib)',
+    // Ferib luaobfuscator.com — sequential `local v0=tonumber;local v1=string.byte;
+    // local v2=...; vN` numbered aliases bound to builtins (the v0..vN run is
+    // distinctive vs IronBrew's single-letter K,N,C,... aliases).
+    marks: [/luaobfuscator/i, /Ferib/i, /Obfuscated.{0,20}LuaObfuscator/i,
+      // `local v0=` numbered-alias preamble is effectively Ferib's signature —
+      // no other engine numbers its builtin aliases v0,v1,v2,... in order.
+      /local\s+v0\s*=\s*[\w.]+\s*;/],
+    struct: [/(?:local\s+v\d+\s*=\s*[^;\n]+;\s*){4,}/, /local\s+v\d+\s*=\s*getfenv|v\d+\s*=\s*math\.ldexp/],
   },
   {
     name: 'IronBrew3',
@@ -258,15 +275,23 @@ function extractClaimedVersion(src, family) {
 
 function detectObfuscator(src) {
   const head = src.slice(0, 4096);
+  // Bound the expensive full-file scans: fingerprints/watermarks/decoder
+  // preambles always live in the first chunk of an obfuscated file. Several
+  // struct patterns are linear on small inputs but quadratic on giant
+  // minified blobs (greedy \w+ before '['), so scanning beyond this window
+  // added minutes for zero signal. 256KB covers real signatures while
+  // capping worst-case regex cost.
+  const SCAN_MAX = 256 * 1024;
+  const body = src.length > SCAN_MAX ? src.slice(0, SCAN_MAX) : src;
   let best = { name: null, confidence: 0, signals: [], claimedVersion: null, versionVerified: false };
   for (const o of KNOWN) {
     const signals = [];
     let score = 0;
     for (const re of o.marks) {
-      if (re.test(head) || re.test(src)) { score += 60; signals.push('watermark'); break; }
+      if (re.test(head) || re.test(body)) { score += 60; signals.push('watermark'); break; }
     }
     let hits = 0;
-    for (const re of o.struct) if (re.test(src)) hits++;
+    for (const re of o.struct) if (re.test(body)) hits++;
     if (o.struct.length && hits === o.struct.length) { score += 35; signals.push(`structure x${hits}`); }
     else if (hits) { score += 15 * hits; signals.push(`partial x${hits}`); }
     const claimedVersion = extractClaimedVersion(src, o.name);
