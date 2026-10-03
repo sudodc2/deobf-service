@@ -294,6 +294,11 @@ function looksLikeLuraph(src) {
   // many single/double-char method keys mapping to functions (VM opcode handlers)
   const handlers = (src.slice(0, 20000).match(/[,{]\s*[A-Za-z_]\w?\s*=\s*function\s*\(/g) || []).length;
   if (handlers >= 8) score += 2;
+  // v15 fingerprint: a giant `X = {` constant pool plus a BST state dispatch on
+  // e1/e9/eA-style vars and seeded-PRNG string decoders seeded `(eX + d1) % …`.
+  const v15Seeds = (src.match(/\(\s*e[A-Za-z0-9_]*\s*\+\s*\w+\s*\)\s*%/g) || []).length;
+  const v15States = (src.match(/\bif\s+e[A-Za-z0-9_]*\s*[<>=~]\s*\d{3,}/g) || []).length;
+  if (v15Seeds >= 8 && v15States >= 8 && /2654435769|1832704949|16807/.test(src)) score += 6;
   return score;
 }
 
@@ -344,6 +349,21 @@ function detectObfuscator(src) {
   }
   candidates.sort((a, b) => b.confidence - a.confidence);
   best.candidates = candidates.filter((c) => c.name !== best.name);
+  // Structural Luraph fingerprint — catches watermark-stripped builds and v15
+  // bodies that a generic family label (e.g. Env-keyed/sealed) would mask.
+  const luraphScore = looksLikeLuraph(src);
+  if ((luraphScore >= 7 && (best.confidence < 60 || /^(luraph|moonveil)$/i.test(best.name || '')))
+      || (luraphScore >= 8 && /^env-keyed/i.test(best.name || ''))) {
+    const claimedVersion = extractClaimedVersion(src, 'Luraph');
+    return {
+      name: 'Luraph',
+      confidence: Math.min(99, luraphScore * 9),
+      signals: [`luraph vm (structural score ${luraphScore})`, ...(claimedVersion ? [`claimed version ${claimedVersion}`] : [])],
+      claimedVersion,
+      versionVerified: Boolean(claimedVersion && luraphScore >= 7),
+      candidates: best.candidates,
+    };
+  }
   return best.name ? best : { name: null, confidence: 0, signals: [], claimedVersion: null, versionVerified: false, candidates: [] };
 }
 

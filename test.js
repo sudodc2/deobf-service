@@ -123,7 +123,7 @@ async function endpointMatrix() {
 {
   const fs = require('fs');
   const fixtures = fs.readdirSync('test/fixtures').filter((f) => f.endsWith('.lua'));
-  const expect = { '77fuscator_real':'77fuscator', boronide_real:'Boronide', ironbrew1_real:'IronBrew1', ironbrew2_real:'IronBrew2', ironbrew3_real:'IronBrew3', lps_real:'LPS', luraph_v13_real:'Luraph', moonsec_v3_real:'MoonSec', prometheus_strong_real:'Prometheus', moonveil_v1_real:'Moonveil', hercules_real:'Hercules', luaobfuscator_vm_real:'LuaObfuscator (Ferib)', luaobfuscator_chaotic_real:'LuaObfuscator (Ferib)', ironbrew2b_real:'IronBrew2', synapsexen_real:'SynapseXen', wynfuscate_real:'wYnFuscate', flurace_real:'Byte-table loadstring', lualorg_real:'lual.org' };
+  const expect = { '77fuscator_real':'77fuscator', boronide_real:'Boronide', ironbrew1_real:'IronBrew1', ironbrew2_real:'IronBrew2', ironbrew3_real:'IronBrew3', lps_real:'LPS', luraph_v13_real:'Luraph', luraph_v15_real:'Luraph', moonsec_v3_real:'MoonSec', prometheus_strong_real:'Prometheus', moonveil_v1_real:'Moonveil', hercules_real:'Hercules', luaobfuscator_vm_real:'LuaObfuscator (Ferib)', luaobfuscator_chaotic_real:'LuaObfuscator (Ferib)', ironbrew2b_real:'IronBrew2', synapsexen_real:'SynapseXen', wynfuscate_real:'wYnFuscate', flurace_real:'Byte-table loadstring', lualorg_real:'lual.org' };
   for (const f of fixtures) {
     const src = fs.readFileSync('test/fixtures/' + f, 'utf8');
     const key = f.replace(/\.lua$/, '');

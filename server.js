@@ -22,6 +22,7 @@ const generic = require('./generic_deobf.js');
 const xorkey = require('./xor_key_deobf.js');
 const strenc = require('./string_enc_deobf.js');
 const vmfam = require('./vm_family_deobf.js');
+const luraphV15 = require('./luraph_v15.js');
 const luaparse = require('luaparse');
 
 const ROOT = __dirname;
@@ -473,7 +474,11 @@ app.post('/deobf', async (req, res) => {
     // silently echoing the loader line back as "recovered source".
     let loaderChain = [];
     let loaderStop = null;
-    if (!fetchedFrom) {
+    // Only chase a remote stub when the input is actually a thin loader:
+    // a large already-obfuscated body (e.g. a 400KB Luraph VM) can contain
+    // HttpGet/URL strings literally and is NOT a fetch stub — fetching its
+    // embedded URL would replace real input with an unrelated page.
+    if (!fetchedFrom && looksLikeThinLoader(source)) {
       const stubUrl = extractRemoteUrl(source);
       if (stubUrl) {
         try { source = await safeFetch(stubUrl); fetchedFrom = stubUrl; }
@@ -592,7 +597,10 @@ app.post('/deobf', async (req, res) => {
     // Only claim Luraph when no stronger, more specific format already matched
     // (KarmaVM/WeAreDevs/etc. also use bit32/method-tables) — override weak or
     // already-Luraph/Moonveil guesses, never a high-confidence dedicated match.
-    if (luraphScore >= 7 && (detected.confidence < 60 || /^(luraph|moonveil)$/i.test(detected.name || ''))) {
+    if ((luraphScore >= 7 && (detected.confidence < 60 || /^(luraph|moonveil)$/i.test(detected.name || '')))
+        // v15's fingerprint (+6 on top of bit32) is distinctive enough to outrank
+        // the generic "Env-keyed/sealed" family label when it fully fires.
+        || (luraphScore >= 8 && /^env-keyed/i.test(detected.name || ''))) {
       const claimedVersion = extractClaimedVersion(source, 'Luraph');
       detected = {
         name: 'Luraph',
@@ -632,7 +640,15 @@ app.post('/deobf', async (req, res) => {
                || which.includes('77fuscator') || which.includes('lps') || which.includes('ironbrew')
                || which.includes('lua obscura') || which.includes('lualock') || which.includes('aztupbrew')
                || which.includes('pew') || which.includes('voltils') || which.includes('syscure')
-               || which.includes('karmavm') || which.includes('env-keyed')) result = vmfam.deobfuscate(source);
+               || which.includes('karmavm') || which.includes('env-keyed')) {
+        // Luraph v15 gets its own seeded-PRNG decoder (readable reconstructed
+        // source) — detect() is its own structural fingerprint, independent of
+        // whatever name the generic detector claimed. Other VM-family formats
+        // keep the best-effort pass.
+        result = luraphV15.detect(source)
+          ? luraphV15.deobfuscate(source)
+          : vmfam.deobfuscate(source);
+      }
       else {
         // No named format matched — attempt best-effort generic recovery on ANY
         // input instead of giving up.
