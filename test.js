@@ -16,6 +16,9 @@ const fixtures = {
   Syscure: '-- syscure.vip\nloadstring(game:HttpGet("https://syscure.vip/obf/0123456789abcdef.lua"))()',
   Pew: '-- Pew Obfuscator v1\nlocal x=string.char(104,105)',
   KarmaProtect: '-- Protected By Karma Lua Hosting\nlocal a=string.char;local b=string.byte;return(function(...)end)',
+  'Lua XOR-key string obf': 'local b={97,98,99,100,101,102,103,104,105,106,107,108} local s="" for i=1,#b do s=s..string.char(b[i]^7) end',
+  Soteria: '-- SOTR\\x01 protected\nreturn({A=function(...)end}) local q=bit32.bor(1,2)',
+  Centurion: '-- Centurion\nreturn({A=function(...)end})',
 };
 
 function detectorMatrix() {
@@ -115,6 +118,22 @@ async function endpointMatrix() {
 (async () => {
   detectorMatrix();
   await endpointMatrix();
+
+// ── Real obfuscated samples (regression) — genuine engine output, not synthetic
+{
+  const fs = require('fs');
+  const fixtures = fs.readdirSync('test/fixtures').filter((f) => f.endsWith('.lua'));
+  const expect = { '77fuscator_real':'77fuscator', boronide_real:'Boronide', ironbrew1_real:'IronBrew1', ironbrew2_real:'IronBrew2', ironbrew3_real:'IronBrew3', lps_real:'LPS', luraph_v13_real:'Luraph', luraph_v15_real:'Luraph', moonsec_v3_real:'MoonSec', prometheus_strong_real:'Prometheus', moonveil_v1_real:'Moonveil', hercules_real:'Hercules', luaobfuscator_vm_real:'LuaObfuscator (Ferib)', luaobfuscator_chaotic_real:'LuaObfuscator (Ferib)', ironbrew2b_real:'IronBrew2', synapsexen_real:'SynapseXen', wynfuscate_real:'wYnFuscate', flurace_real:'Byte-table loadstring', lualorg_real:'lual.org' };
+  for (const f of fixtures) {
+    const src = fs.readFileSync('test/fixtures/' + f, 'utf8');
+    const key = f.replace(/\.lua$/, '');
+    if (!expect[key]) continue;
+    const got = detectObfuscator(src).name;
+    assert(got === expect[key], `fixture ${f}: expected ${expect[key]}, got ${got}`);
+  }
+  console.log('PASS real-sample fixtures:', fixtures.join(', '));
+}
+
   console.log(`PASS: ${Object.keys(fixtures).length} named detectors + clean/spoofed/version cases + API output contract`);
 })().catch((error) => {
   console.error(error);

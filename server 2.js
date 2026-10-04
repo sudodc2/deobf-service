@@ -19,6 +19,10 @@ const karma = require('./karma_deobf.js');
 const kersone = require('./kersone_deobf.js');
 const wearedevs = require('./wearedevs_deobf.js');
 const generic = require('./generic_deobf.js');
+const xorkey = require('./xor_key_deobf.js');
+const strenc = require('./string_enc_deobf.js');
+const vmfam = require('./vm_family_deobf.js');
+const luaparse = require('luaparse');
 
 const ROOT = __dirname;
 const HERCULES = path.join(ROOT, 'tools/hercules/deobfhercules.py');
@@ -245,6 +249,19 @@ function thinLen(out) {
 }
 function isThinOutput(out) {
   return thinLen(out) < 40;
+}
+
+// A named decoder's output that still parses as real Lua with an actual
+// statement — e.g. `print("hi")` recovered out of a loadstring shell — is a
+// genuine recovery even when short. "Thin" should only mean "diagnostics +
+// leftover wrapper", not "the whole program happened to be small".
+function isRealRecovery(out) {
+  if (!out) return false;
+  const code = out.replace(/--\[\[[\s\S]*?\]\]|--[^\n]*/g, '').trim();
+  if (!code) return false;
+  // has an executable statement, not just a comment dump / opaque blob
+  if (!/\b(print|local|return|for|while|if|function|do|end|[A-Za-z_]\w*\s*[=(])\b/.test(code)) return false;
+  try { luaparse.parse(code, { luaVersion: '5.1', comments: false }); return true; } catch (_) { return false; }
 }
 
 function recoveryPercent(payload, originalSource) {
@@ -576,13 +593,14 @@ app.post('/deobf', async (req, res) => {
     const kersoneScore = kersone.looksLikeKersone(source);
     const wearedevsScore = wearedevs.looksLikeWeAreDevs(source);
     let detected = detectObfuscator(source);
+    const priorCandidates = detected.candidates || [];
     if (kersoneScore >= 6 && kersoneScore >= detected.confidence / 15) {
-      detected = { name: 'Kers0ne', confidence: Math.min(99, kersoneScore * 15), signals: [`base66 multi-xor (score ${kersoneScore})`] };
+      detected = { name: 'Kers0ne', confidence: Math.min(99, kersoneScore * 15), signals: [`base66 multi-xor (score ${kersoneScore})`], candidates: priorCandidates };
     }
     // WeAreDevs is a self-contained string-pool decoder + register VM; give it a
     // dedicated high-confidence route ahead of the generic detector.
     if (wearedevsScore >= 8) {
-      detected = { name: 'WeAreDevs', confidence: Math.min(99, wearedevsScore * 9), signals: [`wearedevs vm (score ${wearedevsScore})`] };
+      detected = { name: 'WeAreDevs', confidence: Math.min(99, wearedevsScore * 9), signals: [`wearedevs vm (score ${wearedevsScore})`], candidates: priorCandidates };
     }
     // Luraph structural fingerprint — catches watermark-stripped builds (e.g.
     // onyxv2's ASCII banner) that the comment-based detector would miss/mislabel.
@@ -598,6 +616,7 @@ app.post('/deobf', async (req, res) => {
         signals: [`luraph vm (structural score ${luraphScore})`, ...(claimedVersion ? [`claimed version ${claimedVersion}`] : [])],
         claimedVersion,
         versionVerified: Boolean(claimedVersion && luraphScore >= 7),
+        candidates: priorCandidates,
       };
     }
     const which = forced || ((detected.confidence >= 30 ? detected.name : '') || '').toLowerCase();
@@ -617,7 +636,19 @@ app.post('/deobf', async (req, res) => {
       // KarmaProtect = static string-transform obfuscator (dedicated decoder).
       // "KarmaVM"/"Luraph" are runtime bytecode VMs with no static full-source
       // recovery — fall through to generic best-effort (keeps the detected name).
+      else if (which.includes('xor') || which.includes('decryp')) result = xorkey.deobfuscate(source);
+      else if (which.includes('psu') || which.includes('byte-table')) result = strenc.deobfuscate(source);
+      else if (which.includes('lual')) result = strenc.deobfuscate(source);
+      else if (which.includes('string-enc') || which.includes('ferib') || which.includes('goofys') || which.includes('luaobfusc')) result = strenc.deobfuscate(source);
+      else if (which.includes('wynfusc')) result = vmfam.deobfuscate(source);
+      else if (which.includes('soteria') || which.includes('centurion') || which.includes('moonveil v2')) result = vmfam.deobfuscate(source);
       else if (which.includes('karma') && !which.includes('karmavm')) result = karma.deobfuscate(source);
+      // VM-family engines (constant-pool / register-VM): best-effort recovery.
+      else if (which.includes('luraph') || which.includes('synapsexen') || which.includes('boronide')
+               || which.includes('77fuscator') || which.includes('lps') || which.includes('ironbrew')
+               || which.includes('lua obscura') || which.includes('lualock') || which.includes('aztupbrew')
+               || which.includes('pew') || which.includes('voltils') || which.includes('syscure')
+               || which.includes('karmavm') || which.includes('env-keyed')) result = vmfam.deobfuscate(source);
       else {
         // No named format matched — attempt best-effort generic recovery on ANY
         // input instead of giving up.
@@ -640,7 +671,7 @@ app.post('/deobf', async (req, res) => {
     // diagnostics/comments — e.g. a VM format it can't fully devirtualize, or a
     // misdetection), fall back to generic best-effort so the user always gets
     // as much real recovery as possible instead of an empty/diagnostic dump.
-    if (tool !== 'Generic' && result && !result.protected && isThinOutput(result.output)) {
+    if (tool !== 'Generic' && result && !result.protected && isThinOutput(result.output) && !isRealRecovery(result.output)) {
       try {
         const g = generic.deobfuscate(source);
         const gLen = g && g.output ? g.output.trim().length : 0;
